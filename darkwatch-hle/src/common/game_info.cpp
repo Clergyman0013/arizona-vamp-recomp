@@ -1,4 +1,5 @@
 #include <cstdint>
+#include <string>
 
 #include "app/app.h"
 #include "core/input.h"
@@ -7,11 +8,19 @@
 namespace menu {
 extern bool g_show_fps;
 extern bool g_ps2_alpha;
+extern uint32_t g_fov, g_weapon_fov, g_reticle;
+extern bool g_widescreen, g_mouse_direct, g_cutscene_borders;
 void MenuWindow(void* hwnd);
 bool MenuMessage(void* hwnd, uint32_t msg, uintptr_t wp, intptr_t lp, intptr_t* result);
 void MenuUi(double fps);
 void MenuPad(int port, input::Pad& pad);
 }  // namespace menu
+
+// src/common/content.cpp: the War Train and Splitter selectors, patched as packfile.pck is read
+namespace content {
+extern bool g_bonus;
+void Read(const std::string& xbox, uint64_t pos, uint8_t* data, uint32_t len);
+}  // namespace content
 
 // what the runtime asks of the game; strings must be set, hooks may stay null
 // Darkwatch's defaults, before the settings file loads over them: 16x anisotropic filtering
@@ -32,7 +41,14 @@ const app::GameInfo app::kGame = {
     .missing = L"Put the game in the assets folder: its disc image (.iso), or default.xbe with its folders beside it.",
     .images = {{"default.xbe", "Darkwatch"}},  // each recompiled xbe and its exe, for title launches
     .options = {{"show_fps", &menu::g_show_fps, nullptr},  // game settings kept in the settings file
-                {"ps2_alpha", &menu::g_ps2_alpha, nullptr}},
+                {"ps2_alpha", &menu::g_ps2_alpha, nullptr},
+                {"fov", nullptr, &menu::g_fov},
+                {"weapon_fov", nullptr, &menu::g_weapon_fov},
+                {"widescreen_fov", &menu::g_widescreen, nullptr},
+                {"reticle_size", nullptr, &menu::g_reticle},
+                {"cutscene_borders", &menu::g_cutscene_borders, nullptr},
+                {"mouse_direct_aim", &menu::g_mouse_direct, nullptr},
+                {"bonus_content", &content::g_bonus, nullptr}},
     .load = nullptr,                      // reads more from the settings file's toml::table
     .save = nullptr,                      // writes more into it
     .init = nullptr,                      // after the settings load, before the window and boot
@@ -42,4 +58,5 @@ const app::GameInfo app::kGame = {
     .ui = menu::MenuUi,                   // ImGui drawing each frame
     .pad = menu::MenuPad,                 // changes a polled pad
     .rumble = nullptr,                    // changes a rumble before it is set
+    .read = content::Read,                // changes what a game file read returns
 };

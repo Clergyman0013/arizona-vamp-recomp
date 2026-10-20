@@ -89,8 +89,19 @@ PC settings
   F1 (or Back+Start on a controller) opens the PC settings menu anywhere;
   it is also PC SETTINGS in the pause menu and in the main menu's OPTIONS
   (where Xbox Live used to be). Pages: Display (mode, resolution, render
-  resolution, frame rate cap, V-Sync), Graphics (PS2 alpha blending, anisotropic filtering: 16x by default, precompile shaders),
-  Controls (keyboard and mouse, sensitivity, key bindings), Game (frame rate
-  counter). Changes apply at once; a new display mode asks to keep it and
-  goes back after 15 s. Settings are saved when the menu closes. Exit to
-  Desktop is at the bottom right. The game gets no input while it is open.
+  resolution, frame rate cap, V-Sync), Graphics (PS2 alpha blending,
+  anisotropic filtering: 16x by default, precompile shaders, field of view,
+  weapon field of view, widescreen framing, reticle size, cut-scene
+  borders), Controls (keyboard and mouse, sensitivity, direct mouse aiming,
+  key bindings), Game (frame rate counter, War Train and Splitter grenades).
+  Changes apply at once; a new display mode asks to keep it and goes back
+  after 15 s. Settings are saved when the menu closes. Exit to Desktop is at
+  the bottom right. The game gets no input while it is open.
+
+  The same settings in settings.toml: fov and weapon_fov (degrees across a
+  4:3 frame, 0 the game's 55), widescreen_fov, reticle_size (percent),
+  cutscene_borders, mouse_direct_aim, bonus_content (War Train and the
+  Splitter grenades; read at start).
+
+  The main menu also has QUIT TO DESKTOP. Saves are kept in hdd\E beside
+  Darkwatch.exe: copy that folder to keep them.

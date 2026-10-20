@@ -71,6 +71,35 @@ menu still needed):
 | General | Pause on focus loss (game + sound) | no |
 | Misc | Custom menu cursor (`cursor.png`) | no |
 
+### PC features after Darkwatch: Darker Edition (2026-10-20)
+
+Its feature list (another port on the same SDK and the same USA disc), less its HD artwork, done our own way:
+
+- **100 fps script gate:** LuaComponent's update (`sub_0002A359`) resumed actor scripts only for a frame of at least
+  0.01 s; a shorter frame now counts as 0.01. Seen firing at 144 fps (8 ms frames). WrongTrain's first door at 144,
+  which Darker Edition reports stayed shut, not walked to yet.
+- **War Train and Splitter grenades:** three 2-byte selectors (`src/common/content.cpp`), swapped as the packs
+  are read (SDK `GameInfo::read`). The level list and pickup templates are in packfile.pck *and* SinglStr.pck,
+  and the campaign reads SinglStr.pck's: both are patched. The patch is seen applying; War Train itself is mid-game
+  and the chapter screen shows unlocked chapters only, so it has not been seen in the list or played yet.
+- **Field of view, weapon FOV, Hor+:** the player camera (made by `sub_000F9B1D`) gets its RenderWare view window
+  set again at each BeginUpdate (`sub_00216AF7`) from its own angle, times the setting's tan ratio and, on a wide
+  screen, 4/3 more across. The game's own window is 4:3 (0.52 x 0.39 at 55 degrees). The first-person pass
+  (`sub_000DEDD0`) gets the weapon setting. Checked at 75, 85 and 90. At wide angles a wall right beside the player
+  can show cut by the near clip plane (black). Menus and the HUD stay stretched.
+- **Direct mouse aiming:** yaw `sub_000A2725` and pitch `sub_000A28AE` add the raw mouse counts (0.06 degrees a
+  count at 100%) after the game's own turn; aim assist (look+0x5C) and pitch leveling (+0x74) are off while the
+  mouse aims. Single player only; the horse (`sub_000BE0A9`, a matrix path) keeps the mouse as the stick.
+  Vampire jumps not tried.
+- **Reticle size:** ReticleDisplay (vtable `0x00428378`) through the HUD sprite draw `sub_000DCCDB`. Checked at 150%.
+- **Cut-scene borders:** the cinematic manager's letterbox effect (`[0x004B7A68]`, draw `sub_00326CD1`) is skipped
+  when off. Not seen on screen yet.
+- **QUIT TO DESKTOP** in the main menu (`src/game/menu_hooks.cpp`): a row made in code after the main page builds
+  (`sub_000EA7F6`). Gotcha: a text element made in code is 0x80 bytes; copying one field past that from a
+  front-end row corrupted the heap and crashed when the main page was freed.
+- **Controllers:** already through SDL3 (PlayStation, Switch, Joy-Cons paired by SDL's default). Their button
+  pictures in the game's prompts, mouse-driven game menus and MSAA are left for later.
+
 ### CRI movie crash fixed (2026-10-20)
 
 - The random crash when a movie ends or is skipped (guest null read in `0x0030xxxx`): `sub_00303DF0` hands the

@@ -36,10 +36,21 @@ namespace game_menu {
 void Patch();  // src/game/menu_hooks.cpp
 }
 
+namespace content {
+extern bool g_bonus;  // content.cpp
+}
+
 namespace menu {
 
 bool g_show_fps = false;  // settings file: show_fps
 bool g_ps2_alpha = false;  // settings file: ps2_alpha
+// the game-side options (src/game/pc_hooks.cpp), settings file names in game_info.cpp
+uint32_t g_fov = 0;         // fov: degrees across a 4:3 frame, 0 the game's 55
+uint32_t g_weapon_fov = 0;  // weapon_fov: the same for the first-person arms and gun
+bool g_widescreen = true;   // widescreen_fov
+bool g_mouse_direct = true;  // mouse_direct_aim
+uint32_t g_reticle = 100;    // reticle_size, percent
+bool g_cutscene_borders = true;  // cutscene_borders
 
 namespace {
 
@@ -308,6 +319,16 @@ void PageDisplay() {
     if (ImGui::Checkbox("##vsync", &s.vsync)) s_dirty = true;
 }
 
+// 0 is the game's own; the slider runs 40-110 degrees, the far left reading as the game's
+bool FovSlider(const char* id, uint32_t* deg) {
+    int v = *deg ? int(*deg) : 39;
+    char label[32];
+    std::snprintf(label, sizeof(label), *deg ? "%u" : "Game (55)", *deg);
+    if (!ImGui::SliderInt(id, &v, 39, 110, label)) return false;
+    *deg = v <= 39 ? 0 : uint32_t(v);
+    return true;
+}
+
 void PageGraphics() {
     app::Settings& s = app::Get();
     Row("PS2 alpha blending");
@@ -326,6 +347,26 @@ void PageGraphics() {
     Row("Precompile shaders");
     if (ImGui::Checkbox("##precompile", &s.precompile_shaders)) s_dirty = true;
     Hint("At launch, compile the shaders earlier play used when the graphics driver lacks them (a new driver, a cleared cache), so they do not stutter in the game.");
+    ImGui::Spacing();
+    ImGui::Separator();
+    ImGui::Spacing();
+    Row("Field of view");
+    if (FovSlider("##fov", &g_fov)) s_dirty = true;
+    Row("Weapon field of view");
+    if (FovSlider("##wfov", &g_weapon_fov)) s_dirty = true;
+    Hint("Degrees across a 4:3 frame; the game's is 55. The game's zooms work on top. A wide view can show a wall right beside you cut open, and a wide weapon view the ends of the arms and gun.");
+    Row("Widescreen framing");
+    if (ImGui::Checkbox("##wide", &g_widescreen)) s_dirty = true;
+    Hint("On a wide screen, see more at the sides instead of a stretched 4:3 picture. Menus and the HUD stay stretched.");
+    Row("Reticle size");
+    int ret = int(g_reticle);
+    if (ImGui::SliderInt("##reticle", &ret, 50, 200, "%d%%")) {
+        g_reticle = uint32_t(ret / 5 * 5);
+        s_dirty = true;
+    }
+    Row("Cut-scene borders");
+    if (ImGui::Checkbox("##borders", &g_cutscene_borders)) s_dirty = true;
+    Hint("The black bars of the in-level cut-scenes. Movies are not changed.");
     ImGui::Spacing();
     Hint("More graphics settings (anti-aliasing, draw distance, ambient occlusion) come later.");
 }
@@ -392,6 +433,9 @@ void PageControls() {
         s.mouse_sensitivity = uint32_t(sens);
         s_dirty = true;
     }
+    Row("Direct mouse aiming");
+    if (ImGui::Checkbox("##direct", &g_mouse_direct)) s_dirty = true;
+    Hint("On foot the mouse turns the view by how far it moves, with no stick curve or aim assist. Off: the mouse is the right stick, as on the horse and in split screen.");
     ImGui::Spacing();
     ImGui::Separator();
     ImGui::TextUnformatted("Key bindings");
@@ -443,8 +487,9 @@ void PageControls() {
 void PageGame() {
     Row("Show frame rate");
     if (ImGui::Checkbox("##fps", &g_show_fps)) s_dirty = true;
-    ImGui::Spacing();
-    Hint("Field of view and more come later.");
+    Row("War Train and Splitter grenades");
+    if (ImGui::Checkbox("##bonus", &content::g_bonus)) s_dirty = true;
+    Hint("Content the Xbox disc has but leaves off: the War Train chapter and the Splitter grenade pickups (D-pad up changes grenade type). Takes effect at the next start.");
 }
 
 bool s_confirm_exit = false;

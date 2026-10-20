@@ -132,6 +132,26 @@ X86_FUNC(sub_0030E2B0) {
     __imp__sub_0030E2B0(ctx, base);
 }
 
+// LuaComponent's update (thiscall, dt in seconds; ret 4): it resumes the actor's scripts only when dt is at least
+// 0.01 and reads dt for nothing else. Above 100 fps every frame is shorter, so scripted actors never updated
+// (Darkwatch: Darker Edition saw WrongTrain's first door stay shut at 144 fps). A shorter frame counts as 0.01, so
+// the scripts run each frame, as they do at 60.
+X86_EXTERN_FUNC(__imp__sub_0002A359);
+X86_FUNC(sub_0002A359) {
+    uint32_t bits = kernel::R32(ctx.esp + 4);
+    float dt;
+    std::memcpy(&dt, &bits, 4);
+    if (dt > 0 && dt < 0.01f) {
+        static bool logged = false;
+        if (!logged) LOGR("scripts: a frame under 10 ms (%.1f ms) counts as 10 for actor scripts", dt * 1000);
+        logged = true;
+        dt = 0.01f;
+        std::memcpy(&bits, &dt, 4);
+        kernel::W32(ctx.esp + 4, bits);
+    }
+    __imp__sub_0002A359(ctx, base);
+}
+
 // XOnlineGetUsers(users, count): the Xbox Live accounts stored on the hard disk. The host's XOnlineStartup succeeds
 // without making the library's XOnline object, and this one returns XONLINE_E_NOT_INITIALIZED (0x80150005) when
 // that object is null -- which a console never sees. Darkwatch's front end ignores the result and loads its UIX

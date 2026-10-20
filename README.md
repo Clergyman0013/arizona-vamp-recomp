@@ -43,15 +43,25 @@ Day-to-day progress, findings and open bugs are in [STATUS.md](STATUS.md).
 in the pause menu or the main menu's OPTIONS (it replaces the Xbox Live entry).
 - **Display:** fullscreen / borderless / windowed, resolution, render resolution 25-200%, frame-rate cap, V-Sync.
   A new display mode asks to be kept and goes back after 15 seconds.
-- **Graphics:** anisotropic filtering (16x by default), optional *PS2 alpha blending* (removes the
-  previous-frame ghosting that the Xbox version has).
-- **Controls:** keyboard and mouse on or off, mouse look and sensitivity, key rebinding.
-- **Game:** frame-rate counter.
+- **Graphics:** field of view and a separate weapon field of view, widescreen framing (a wide screen shows more
+  at the sides instead of a stretched 4:3 picture), reticle size, in-level cut-scene borders on or off,
+  anisotropic filtering (16x by default), optional *PS2 alpha blending* (removes the previous-frame ghosting that
+  the Xbox version has).
+- **Controls:** keyboard and mouse on or off, mouse look and sensitivity, direct mouse aiming, key rebinding.
+- **Game:** frame-rate counter, the War Train chapter and Splitter grenades (below).
 - Changes apply at once and are saved to `settings.toml`. Exit to Desktop is one click away.
 
 **Input**
-- Controllers work as on the console.
+- Controllers work as on the console: Xbox, PlayStation and Switch Pro pads, and paired Joy-Cons (through SDL;
+  the buttons go by position, so a Switch pad's bottom button is A).
 - Full keyboard and mouse support for player 1, with raw mouse look and rebindable keys.
+- **Direct mouse aiming** on foot: the view turns by how far the mouse moves, with no stick curve and no aim
+  assist. On the horse and in split screen the mouse works as the right stick.
+
+**Content the Xbox disc leaves off**
+- The **War Train** chapter and the **Splitter grenade** pickups (D-pad up, the Up arrow, changes grenade type),
+  with the Xbox dynamite that stood in for them taken out. Your files are not changed: three selectors are swapped
+  as the game reads them. On by default; PC settings, Game.
 
 **For testers**
 - **F4** opens a bug-report box: type what you saw, and a folder with your note, a frame capture, the log tail and
@@ -59,8 +69,12 @@ in the pause menu or the main menu's OPTIONS (it replaces the Xbox Live entry).
 - **F3** captures a frame (every draw call, render target and shader) for debugging.
 
 **Fixes over a straight port**
+- Frame rates above 100: the game's actor scripts skipped every frame shorter than 10 ms, so scripted things
+  (doors, enemies) stood still at 120 or 144 fps. They now run every frame.
+- **QUIT TO DESKTOP** in the main menu.
 - Fog-streak fix in the meat-locker corridor (the game's own screen-space texture scale, patched).
 - Xbox Live entries turned into the PC settings menu.
+- Saves stay beside the game (`hdd\E`), so a copied folder keeps them.
 
 ## Installing (Windows)
 
@@ -128,9 +142,10 @@ The quality bar is [BLACK-XBERecomp](https://github.com/TGP482/BLACK-XBERecomp),
 The full list is in [ROADMAP.md](ROADMAP.md). In short:
 
 1. **Play-through QA:** play the whole game, file F4 reports, fix as they come.
-2. **More PC options:** field of view and viewmodel FOV, monitor choice, MSAA / SMAA, draw distance,
-   FMV scaling, pause on focus loss, mouse invert, HDR10.
-3. **Polish:** a native EXIT TO DESKTOP entry in the game's own menus, hide the leftover Xbox Live notices,
+2. **More PC options:** MSAA / SMAA, monitor choice, draw distance, FMV scaling, pause on focus loss, mouse
+   invert, HDR10.
+3. **Polish:** PlayStation and Switch button pictures in the game's prompts, mouse-driven game menus, direct
+   mouse aiming on the horse, the HUD kept in proportion on a wide screen, hide the leftover Xbox Live notices,
    background shader compiles so even the very first run does not stutter.
 4. **More platforms:** macOS, then Android.
 
@@ -169,6 +184,9 @@ see [CONTRIBUTING.md](CONTRIBUTING.md). Please do not attach game files or anyth
 
 - [XboxXBERecomp](https://github.com/TGP482/XboxXBERecomp) by TGP482: the static recompilation SDK this port is built on.
 - [BLACK-XBERecomp](https://github.com/TGP482/BLACK-XBERecomp): the quality bar.
+- [Darkwatch: Darker Edition](https://github.com/linkssy2/DarkwatchDarkerEdition) by linkssy2, another port on the
+  same SDK: its feature list, its War Train / Splitter selectors and its finding of the 100 fps script gate led
+  ours (our code is our own).
 - [xboxrecomp](https://github.com/sp00nznet/xboxrecomp) by sp00nznet: the toolkit behind the reference port
   (with parts from [xemu](https://xemu.app/), LGPL-2.1).
 - [Dear ImGui](https://github.com/ocornut/imgui), [SDL](https://github.com/libsdl-org/SDL),

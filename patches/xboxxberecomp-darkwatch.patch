@@ -149,7 +149,7 @@ index a237161..130f15f 100644
 +        COMMAND ${CMAKE_COMMAND} -E rm -f ${XBE_COMPILER_DIR}/work/${target}/built.txt)
  endfunction()
 diff --git a/runtime/app/app.h b/runtime/app/app.h
-index d3519d5..92b4fd3 100644
+index d3519d5..33b2103 100644
 --- a/runtime/app/app.h
 +++ b/runtime/app/app.h
 @@ -22,7 +22,16 @@ struct Settings {
@@ -193,6 +193,15 @@ index d3519d5..92b4fd3 100644
 +
  // held around ImGui: the window thread's messages and the renderer's frame
  std::recursive_mutex& UiLock();
+ 
+@@ -90,6 +110,8 @@ struct GameInfo {
+     void (*ui)(double fps);        // each frame inside the ImGui frame, UiLock held
+     void (*pad)(int port, input::Pad& pad);  // a polled pad before the game gets it
+     void (*rumble)(int port, uint16_t& left, uint16_t& right);
++    // bytes just read from a game file (its Xbox path, normalized), at pos in that file; may change them
++    void (*read)(const std::string& xbox, uint64_t pos, uint8_t* data, uint32_t len);
+ };
+ extern const GameInfo kGame;
  
 diff --git a/runtime/app/game_code.cpp b/runtime/app/game_code.cpp
 new file mode 100644
@@ -1370,7 +1379,7 @@ index 4b494d0..3ae3c14 100644
          if (o.flag) t.insert(o.key, *o.flag);
          else t.insert(o.key, int64_t(*o.value));
 diff --git a/runtime/core/input.cpp b/runtime/core/input.cpp
-index 8a0f1d0..39d4e32 100644
+index 8a0f1d0..7b030b6 100644
 --- a/runtime/core/input.cpp
 +++ b/runtime/core/input.cpp
 @@ -2,8 +2,24 @@
@@ -1398,7 +1407,7 @@ index 8a0f1d0..39d4e32 100644
  
  #include <SDL3/SDL.h>
  
-@@ -14,6 +30,163 @@ namespace input {
+@@ -14,6 +30,168 @@ namespace input {
  
  namespace {
  
@@ -1481,6 +1490,9 @@ index 8a0f1d0..39d4e32 100644
 +
 +// the mouse: raw motion summed by the window thread, read as the right stick at the speed it moved
 +std::atomic<int> g_mouse_dx{0}, g_mouse_dy{0};
++std::atomic<int> g_direct[2] = {0, 0};      // the same motion, for TakeMouse
++std::atomic<uint64_t> g_direct_t[2] = {0, 0};  // when each axis was last taken, ms
++constexpr uint64_t kDirectHold = 150;        // taken this recently: the mouse does not move the stick
 +std::atomic<bool> g_mouse_on{true};  // F2 toggles
 +bool g_clipped = false;
 +uint64_t g_mouse_t = 0;  // when the motion was last read, ms
@@ -1549,6 +1561,8 @@ index 8a0f1d0..39d4e32 100644
 +        float dt = g_mouse_t ? float(now - g_mouse_t) / 1000.0f : 0.01f;
 +        g_mouse_t = now;
 +        int dx = g_mouse_dx.exchange(0), dy = g_mouse_dy.exchange(0);
++        if (now - g_direct_t[0] < kDirectHold) dx = 0;  // a game hook turns the view with it
++        if (now - g_direct_t[1] < kDirectHold) dy = 0;
 +        g_look_x = look ? Look(float(dx) / dt) : 0;
 +        g_look_y = look ? Look(float(-dy) / dt) : 0;  // the mouse moved up looks up
 +    }
@@ -1562,7 +1576,7 @@ index 8a0f1d0..39d4e32 100644
  // a controller takes the lowest free port when it is plugged in and keeps it until it is unplugged
  std::mutex g_lock;
  bool g_sdl = false;
-@@ -55,6 +228,14 @@ void UpdatePads() {
+@@ -55,6 +233,14 @@ void UpdatePads() {
  }  // namespace
  
  void Init() {
@@ -1577,7 +1591,7 @@ index 8a0f1d0..39d4e32 100644
      // WGI reads the triggers apart and HIDAPI takes PlayStation and Switch pads. Reads come from the guest's threads,
      // so SDL's own thread takes the device notices.
      SDL_SetHint(SDL_HINT_JOYSTICK_THREAD, "1");
-@@ -106,11 +287,27 @@ Pad Poll(int port) {
+@@ -106,11 +292,27 @@ Pad Poll(int port) {
              p.rx = int16_t(axis(SDL_GAMEPAD_AXIS_RIGHTX));
              p.ry = int16_t(-1 - axis(SDL_GAMEPAD_AXIS_RIGHTY));
          }
@@ -1605,7 +1619,7 @@ index 8a0f1d0..39d4e32 100644
  // the motors run until set again
  void Rumble(int port, uint16_t left, uint16_t right) {
      if (app::kGame.rumble) app::kGame.rumble(port, left, right);
-@@ -118,4 +315,56 @@ void Rumble(int port, uint16_t left, uint16_t right) {
+@@ -118,4 +320,67 @@ void Rumble(int port, uint16_t left, uint16_t right) {
      if (port >= 0 && port < 4 && g_pads[port]) SDL_RumbleGamepad(g_pads[port], left, right, 0);
  }
  
@@ -1647,6 +1661,16 @@ index 8a0f1d0..39d4e32 100644
 +    if (ri.header.dwType != RIM_TYPEMOUSE || (ri.data.mouse.usFlags & MOUSE_MOVE_ABSOLUTE)) return;
 +    g_mouse_dx += ri.data.mouse.lLastX;
 +    g_mouse_dy += ri.data.mouse.lLastY;
++    g_direct[0] += ri.data.mouse.lLastX;
++    g_direct[1] += ri.data.mouse.lLastY;
++}
++int TakeMouse(int axis) {
++    if (axis < 0 || axis > 1) return 0;
++    uint64_t now = NowMs(), last = g_direct_t[axis].exchange(now);
++    int n = g_direct[axis].exchange(0);
++    // motion from before a pause (nothing took it for a while) or while the mouse is free is dropped
++    if (!MouseCaptured() || now - last > 250) return 0;
++    return n;
 +}
 +void ToggleMouse() {
 +    g_mouse_on = !g_mouse_on;
@@ -1659,11 +1683,12 @@ index 8a0f1d0..39d4e32 100644
 +void RawInput(intptr_t) {}
 +void ToggleMouse() {}
 +bool MouseCaptured() { return false; }
++int TakeMouse(int) { return 0; }
 +#endif
 +
  }  // namespace input
 diff --git a/runtime/core/input.h b/runtime/core/input.h
-index 21f9051..0001d12 100644
+index 21f9051..c38cab2 100644
 --- a/runtime/core/input.h
 +++ b/runtime/core/input.h
 @@ -1,5 +1,8 @@
@@ -1675,7 +1700,7 @@ index 21f9051..0001d12 100644
  
  namespace input {
  
-@@ -11,9 +14,21 @@ struct Pad {
+@@ -11,9 +14,25 @@ struct Pad {
      int16_t lx = 0, ly = 0, rx = 0, ry = 0;
  };
  
@@ -1697,6 +1722,10 @@ index 21f9051..0001d12 100644
 +void RawInput(intptr_t lp);
 +void ToggleMouse();
 +bool MouseCaptured();
++// direct mouse aiming, for a game hook that turns the view itself: the raw mouse counts on an axis (0 x, 1 y; y down)
++// since the last take, 0 while the mouse does not look. While a game takes them the mouse stops moving the right
++// stick; when it has not for a moment (a view the hook does not cover) the stick gets the mouse again.
++int TakeMouse(int axis);
 +
  }  // namespace input
 diff --git a/runtime/cpu/dispatch.cpp b/runtime/cpu/dispatch.cpp
@@ -2825,10 +2854,26 @@ index f636701..e6f0423 100644
      }                                                                                                    \
      static const bool kreg_##name = (::kernel::RegisterExport(ord, #name, kentry_##name), true);         \
 diff --git a/runtime/kernel/files.cpp b/runtime/kernel/files.cpp
-index e34ffbb..f4c810a 100644
+index e34ffbb..6a58f22 100644
 --- a/runtime/kernel/files.cpp
 +++ b/runtime/kernel/files.cpp
-@@ -493,6 +493,15 @@ static uint32_t Transfer(const Args& a, bool write, uint32_t pages) {
+@@ -6,6 +6,7 @@
+ #include <fstream>
+ #include <map>
+ 
++#include "app/app.h"
+ #include "kernel/disc.h"
+ #include "kernel/kernel.h"
+ #include "kernel/exports.h"
+@@ -484,6 +485,7 @@ static uint32_t Transfer(const Args& a, bool write, uint32_t pages) {
+         size_t done = f->entry ? MountedDisc()->Read(*f->entry, pos + n, HostPtr(at), chunk)
+                       : write  ? std::fwrite(HostPtr(at), 1, chunk, f->fp)
+                                : std::fread(HostPtr(at), 1, chunk, f->fp);
++        if (!write && done && app::kGame.read) app::kGame.read(f->xbox, pos + n, static_cast<uint8_t*>(HostPtr(at)), uint32_t(done));
+         n += uint32_t(done);
+         if (done < chunk) break;
+     }
+@@ -493,6 +495,15 @@ static uint32_t Transfer(const Args& a, bool write, uint32_t pages) {
      return Finish(*f, kSuccess, n, event, apc, apc_ctx, iosb);
  }
  

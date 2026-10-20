@@ -19,14 +19,25 @@ Where Arizona Vamp Recomp is going. The quality bar is
 - F4 bug-report box and F3 frame captures.
 - Releases ship no game code: the first start builds it from the player's own disc image or files.
 - Optional PS2 alpha blending (no previous-frame ghosting); anisotropic filtering, 16x by default.
+- Field of view and weapon field of view, widescreen framing (Hor+), reticle size, cut-scene borders on or off.
+- Direct mouse aiming on foot (no stick curve, no aim assist).
+- Actor scripts run above 100 fps (the game skipped frames shorter than 10 ms).
+- QUIT TO DESKTOP in the main menu.
+- The War Train chapter and the Splitter grenades the Xbox disc leaves off (selectors swapped as the packs are
+  read).
 
 ## Next
 
 1. **Play-through QA.** Play every level, file F4 reports, fix what turns up. Compare against console footage.
-2. **Field of view** and **viewmodel FOV** settings (in progress).
-3. **Exit to Desktop** as a native entry in the game's own pause and quit menus.
-4. Hide the leftover Xbox Live notices (the "SIGN-IN FAILED." line in levels).
-5. F1 in gameplay also pauses the game.
+   Includes War Train and the Splitter pickups, which have not been played yet.
+2. **PlayStation and Switch button pictures** in the game's prompts (the pads work already; the prompts show Xbox
+   buttons).
+3. **Mouse-driven game menus:** point and click, the wheel, right-click to go back.
+4. **MSAA.**
+5. Direct mouse aiming on the horse (it uses the mouse as the stick for now).
+6. Keep the HUD and menus in proportion on a wide screen (they are stretched from 4:3).
+7. Exit to Desktop in the pause menu too; hide the leftover Xbox Live notices ("SIGN-IN FAILED.").
+8. F1 in gameplay also pauses the game.
 
 ## PC features (the BLACK list)
 
@@ -36,7 +47,8 @@ Where Arizona Vamp Recomp is going. The quality bar is
 | Display | Resolution, render resolution 25-200% | done |
 | Display | Frame-rate cap, V-Sync | done |
 | Display | Frame-rate counter | done |
-| Display | Field of view (gameplay), viewmodel FOV | in progress |
+| Display | Field of view (gameplay), viewmodel FOV | done |
+| Display | Widescreen framing (Hor+), reticle size, cut-scene borders | done |
 | Display | Monitor choice | planned |
 | Display | FMV scaling (fill / 4:3) | planned |
 | Display | HDR10 output | planned |
@@ -47,7 +59,10 @@ Where Arizona Vamp Recomp is going. The quality bar is
 | Graphics | Ambient occlusion | maybe (needs depth; hard) |
 | Input | Keyboard and mouse, raw input, rebinding | done |
 | Input | Mouse invert | planned |
-| Input | Controllers through SDL3, gyro aiming | planned |
+| Input | Direct mouse aiming | done (on foot; the horse later) |
+| Input | Controllers through SDL3 (Xbox, PlayStation, Switch, Joy-Cons) | done; their button prompts planned |
+| Input | Gyro aiming | planned |
+| Input | Mouse-driven game menus | planned |
 | General | Skip movies with Start / Escape | partly (the intro skips) |
 | General | Pause on focus loss (game and sound) | planned |
 | General | Custom menu cursor | planned |
