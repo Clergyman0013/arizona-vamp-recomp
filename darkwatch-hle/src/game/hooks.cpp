@@ -112,6 +112,26 @@ X86_FUNC(sub_001CDEC7) {
     ctx.eax = eax;
 }
 
+// The CRI movie player's handle check (cdecl: handle, out_a, out_b): it tells the handle's kind by its vtable and
+// writes two counts, 0 and 0 for a handle of neither kind. sub_00303DF0 passes it the handle sub_0030DE00 finds
+// for the player's current stream, and that lookup leaves 0 when the stream's slot is not set up yet (it reports CRI
+// error FF000401 and goes on). The host's threads run truly side by side, so the decoder sometimes gets there first:
+// the check then read the null handle's vtable (guest 0) and the game crashed, at the intro or a briefing's movie.
+// A null handle is of neither kind.
+X86_EXTERN_FUNC(__imp__sub_0030E2B0);
+X86_FUNC(sub_0030E2B0) {
+    if (!kernel::R32(ctx.esp + 4)) {
+        static bool logged = false;
+        if (!logged) LOGR("cri: movie stream handle not ready yet, counted as none");
+        logged = true;
+        kernel::W32(kernel::R32(ctx.esp + 8), 0);
+        kernel::W32(kernel::R32(ctx.esp + 12), 0);
+        kernel::Return(ctx, 0, 0);  // cdecl
+        return;
+    }
+    __imp__sub_0030E2B0(ctx, base);
+}
+
 // XOnlineGetUsers(users, count): the Xbox Live accounts stored on the hard disk. The host's XOnlineStartup succeeds
 // without making the library's XOnline object, and this one returns XONLINE_E_NOT_INITIALIZED (0x80150005) when
 // that object is null -- which a console never sees. Darkwatch's front end ignores the result and loads its UIX
