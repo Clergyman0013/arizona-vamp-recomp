@@ -25,6 +25,10 @@ namespace menu {
 void OpenFromGame();
 }
 
+namespace coop {
+void MainPick(X86Context& ctx, uint32_t item);
+}
+
 namespace game_menu {
 
 namespace {
@@ -219,6 +223,7 @@ X86_EXTERN_FUNC(__imp__sub_000EA9B7);
 X86_FUNC(sub_000EA9B7) {
     uint32_t menu = kernel::R32(ctx.ecx + 0x58);
     uint32_t item = menu ? game_menu::Selected(menu) : 0;
+    coop::MainPick(ctx, item);  // MULTIPLAYER asks VERSUS or CO-OP: src/game/coop_hooks.cpp
     if (item && Linked(item, kQuitLink)) {
         LOGR("menu: quit to desktop");
         PostMessageW(static_cast<HWND>(app::Window()), WM_CLOSE, 0, 0);

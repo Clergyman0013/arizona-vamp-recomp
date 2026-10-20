@@ -32,6 +32,17 @@ namespace mouse_menus {
 extern bool g_on;  // src/game/mouse_menus.cpp
 }
 
+namespace coop {
+void TestPad(int port, input::Pad& pad);  // src/game/coop_hooks.cpp: ports 3 and 4 in co-op, XBE_COOP_P2 test pads
+}
+
+namespace {
+void Pad(int port, input::Pad& pad) {
+    coop::TestPad(port, pad);
+    menu::MenuPad(port, pad);
+}
+}  // namespace
+
 // what the runtime asks of the game; strings must be set, hooks may stay null
 // Darkwatch's defaults, before the settings file loads over them: 16x anisotropic filtering
 namespace {
@@ -68,7 +79,7 @@ const app::GameInfo app::kGame = {
     .window = menu::MenuWindow,           // the game window is up, before boot
     .message = menu::MenuMessage,         // window messages first; true takes one
     .ui = menu::MenuUi,                   // ImGui drawing each frame
-    .pad = menu::MenuPad,                 // changes a polled pad
+    .pad = Pad,                           // changes a polled pad
     .rumble = nullptr,                    // changes a rumble before it is set
     .read = content::Read,                // changes what a game file read returns
     .texture = prompts::Texture,          // changes a decoded texture
