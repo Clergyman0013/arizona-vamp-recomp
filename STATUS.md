@@ -71,6 +71,18 @@ menu still needed):
 | General | Pause on focus loss (game + sound) | no |
 | Misc | Custom menu cursor (`cursor.png`) | no |
 
+### CRI movie crash fixed (2026-10-20)
+
+- The random crash when a movie ends or is skipped (guest null read in `0x0030xxxx`): `sub_00303DF0` hands the
+  movie player's handle check `sub_0030E2B0` the handle `sub_0030DE00` finds for the current stream, which is 0
+  while that stream's slot is not set up yet (CRI error `FF000401`). The host's threads run side by side, so
+  the decoder sometimes gets there first, and the check read the null handle's vtable. Both of the latest dumps
+  crashed there (`sub_0030DF70`).
+- Hook on `sub_0030E2B0` (`src/game/hooks.cpp`): a null handle gets the answer of a handle of neither kind
+  (0 and 0), as the game already gives; logged once ("cri: movie stream handle not ready yet").
+- Checked: 6 boots with the intro movies skipped hard, no crash (2 crashes in about 8 runs before). The
+  hook's path did not come up in those runs.
+
 ### Shader pre-compile at launch (2026-10-20)
 
 - Every pipeline key a draw needs goes on `shadercache\pipelines.bin` (any driver). Compiled pipelines go in a
@@ -330,7 +342,7 @@ fault (task-005 notes). Other open items:
   the symbolizer puts the host side in `kernel::kimpl_NtDuplicateObject`)
   and `0x0026D211`; neither appeared in the Debug run.
 - No reload sound (task-005).
-- The CRI movie crash: guest thread 28, `read 100000000`, `0x0030xxxx`, when
+- ~~The CRI movie crash~~ fixed 2026-10-20 (see above): guest thread 28, `read 100000000`, `0x0030xxxx`, when
   a movie ends or is skipped (the intro, and once at DIFFICULTY). Random:
   a relaunch gets past it. The xboxrecomp port had a CRI worker race too
   (BRINGUP.md).
@@ -558,7 +570,7 @@ exception — info lines such as `open Z:\audioWpn.pck` are compiled out under
 3e. ~~Keyboard/mouse native input~~ Done 2026-10-18 (see "Keyboard and mouse"). Was: (owner request,
     2026-10-18): for end users and to let the agent drive menus/QA without
     the pad.
-3f. **Next: the CRI movie crash** (guest thread in CRI code `0x0030xxxx`, null
+3f. ~~**The CRI movie crash**~~ fixed 2026-10-20 (`sub_0030E2B0` null handle). (guest thread in CRI code `0x0030xxxx`, null
     read, when a movie ends or is skipped). It now happens often enough
     (twice on 2026-10-18 on the way into the level) to block QA runs.
     *Senior.*

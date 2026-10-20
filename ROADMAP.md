@@ -12,6 +12,7 @@ Where Arizona Vamp Recomp is going. The quality bar is
 - Crash fixes: DirectSound after START, the LOADING screen, briefing CONTINUE.
 - Keyboard and mouse with raw mouse look and rebinding.
 - Shader disk cache: no compile hitches after the first run.
+- The random crash when a movie ends or is skipped (a CRI movie-player race) is fixed.
 - Shader pre-compile at launch, checked against the graphics driver: a new driver recompiles behind a progress
   bar (Skip, Don't show again) instead of stuttering in the game.
 - In-game PC settings menu (F1, Back + Start, or PC SETTINGS in the game's own menus).
@@ -56,7 +57,6 @@ Where Arizona Vamp Recomp is going. The quality bar is
 - Compile shaders in the background so even the very first run does not stutter (later runs and driver
   updates are covered by the launch pre-compile).
 - 3D sound: per-bin mix attenuation (`GetVoiceProperties` reports no mix bins yet).
-- Track down the rare CRI movie-player crash (0 in 100 test runs, seen before).
 
 ## Platforms
 
