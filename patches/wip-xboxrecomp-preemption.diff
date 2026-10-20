@@ -1,0 +1,178 @@
+diff --git a/src/kernel/kernel_bridge.c b/src/kernel/kernel_bridge.c
+index e3bba2d..3aeb46c 100644
+--- a/src/kernel/kernel_bridge.c
++++ b/src/kernel/kernel_bridge.c
+@@ -9824,8 +9824,13 @@ static int g_cpu_busy;                    /* some thread holds the token */
+ static uintptr_t g_cpu_reserved_by;       /* thread id it is kept for */
+ static long long g_cpu_reserved_until;    /* QPC ticks */
+ static long long g_cpu_slice_ticks;
++static DWORD g_cpu_quantum_ms;            /* 0: never preempt */
++static long long g_cpu_quantum_ticks;
++static int g_cpu_waiters;                 /* threads waiting for the token */
++volatile int g_recomp_preempt;            /* see RECOMP_PREEMPT_POINT */
+ static RECOMP_TLS int t_guest_thread;     /* this host thread runs a guest thread */
+ static RECOMP_TLS int t_guest_held;       /* and holds the guest CPU */
++static RECOMP_TLS int t_interrupt_depth;  /* inside guest interrupt/DPC code */
+ static RECOMP_TLS int t_dispatch_depth;
+ static RECOMP_TLS char t_cpu_self;        /* its address is this thread's id */
+ 
+@@ -9843,10 +9848,14 @@ static int guest_cpu_enabled(void)
+         const char *sl = getenv("RECOMP_GUEST_LOCK_SLICE_US");
+         LARGE_INTEGER f;
+         long us = sl ? atol(sl) : 1000;
++        const char *qe = getenv("RECOMP_GUEST_QUANTUM_MS");
++        long q = qe ? atol(qe) : 5;
++        g_cpu_quantum_ms = q < 0 ? 0 : (DWORD)q;
+         InitializeCriticalSection(&g_guest_cpu);
+         InitializeConditionVariable(&g_guest_cpu_cv);
+         QueryPerformanceFrequency(&f);
+         g_cpu_slice_ticks = (long long)f.QuadPart * (us < 0 ? 0 : us) / 1000000;
++        g_cpu_quantum_ticks = (long long)f.QuadPart * g_cpu_quantum_ms / 1000;
+         g_guest_cpu_on = e && *e == '1';
+         if (g_guest_cpu_on)
+             fprintf(stderr, "  [KERNEL] guest CPU lock on: one guest thread runs at a"
+@@ -9857,26 +9866,81 @@ static int guest_cpu_enabled(void)
+ 
+ /* Take the token. An interrupt ignores a reservation: on the console it
+  * lands between any two instructions of whichever thread is running. */
+-static void cpu_acquire(int ignore_reservation)
++/* With g_guest_cpu held. A thread kept waiting for a busy CPU a quantum
++ * long asks the holder to yield (RECOMP_PREEMPT_POINT); an interrupt asks at
++ * once, as it would land at once on the console. */
++static void cpu_acquire_locked(int ignore_reservation)
+ {
+     uintptr_t me = (uintptr_t)&t_cpu_self;
+-    EnterCriticalSection(&g_guest_cpu);
++    long long start = cpu_now(), asked_at = 0, quantum = g_cpu_quantum_ticks;
++    g_cpu_waiters++;
++    if (quantum && ignore_reservation)
++        g_recomp_preempt = 1;
+     for (;;) {
+         long long now;
+         if (g_cpu_busy) {
+-            SleepConditionVariableCS(&g_guest_cpu_cv, &g_guest_cpu, INFINITE);
++            if (!quantum) {
++                SleepConditionVariableCS(&g_guest_cpu_cv, &g_guest_cpu, INFINITE);
++                continue;
++            }
++            /* Asked again each quantum: the holder may have yielded to
++             * some other waiter, which then owes this one the same. */
++            now = cpu_now();
++            if (now - start >= quantum && now - asked_at >= quantum) {
++                g_recomp_preempt = 1;
++                asked_at = now;
++            }
++            SleepConditionVariableCS(&g_guest_cpu_cv, &g_guest_cpu, g_cpu_quantum_ms);
+             continue;
+         }
+-        if (ignore_reservation || !g_cpu_reserved_by || g_cpu_reserved_by == me)
++        /* A thread that has waited out its quantum does not wait out another
++         * thread's reservation too: the holder coming back from quick kernel
++         * calls within its slice would otherwise keep the CPU for ever. */
++        if (ignore_reservation || !g_cpu_reserved_by || g_cpu_reserved_by == me
++            || (quantum && cpu_now() - start >= quantum))
+             break;
+         now = cpu_now();
+         if (now >= g_cpu_reserved_until)
+             break;
+         SleepConditionVariableCS(&g_guest_cpu_cv, &g_guest_cpu, 1);
+     }
++    g_cpu_waiters--;
+     g_cpu_busy = 1;
+     if (g_cpu_reserved_by == me)
+         g_cpu_reserved_by = 0;
++}
++
++static void cpu_acquire(int ignore_reservation)
++{
++    EnterCriticalSection(&g_guest_cpu);
++    cpu_acquire_locked(ignore_reservation);
++    LeaveCriticalSection(&g_guest_cpu);
++}
++
++/* The holder's side of preemption, from RECOMP_PREEMPT_POINT. It gives the
++ * CPU up, steps back until a waiter has taken it, then queues for it like
++ * any other thread. Only a guest thread holding the CPU yields: an interrupt
++ * or DPC runs to completion, as it does on the console. */
++void recomp_preempt(void)
++{
++    long long until;
++    if (!t_guest_held || t_interrupt_depth || g_guest_cpu_on != 1)
++        return;
++    EnterCriticalSection(&g_guest_cpu);
++    if (!g_recomp_preempt || !g_cpu_waiters) {
++        g_recomp_preempt = 0;
++        LeaveCriticalSection(&g_guest_cpu);
++        return;
++    }
++    g_recomp_preempt = 0;
++    g_cpu_busy = 0;
++    if (g_cpu_reserved_by == (uintptr_t)&t_cpu_self)
++        g_cpu_reserved_by = 0;
++    WakeAllConditionVariable(&g_guest_cpu_cv);
++    until = cpu_now() + g_cpu_slice_ticks;
++    while (!g_cpu_busy && g_cpu_waiters && cpu_now() < until)
++        SleepConditionVariableCS(&g_guest_cpu_cv, &g_guest_cpu, 1);
++    cpu_acquire_locked(0);
+     LeaveCriticalSection(&g_guest_cpu);
+ }
+ 
+@@ -9899,7 +9963,6 @@ static void cpu_release(int reserve)
+  * for the length of it, so it runs between guest instructions rather than
+  * alongside them. Re-entrant: a guest thread already holding it (a DPC
+  * drained from inside a kernel call) does not take it twice. */
+-static RECOMP_TLS int t_interrupt_depth;
+ 
+ void guest_cpu_interrupt_enter(void)
+ {
+diff --git a/templates/runtime/recomp_types.h b/templates/runtime/recomp_types.h
+index 5a6a60c..942dcdd 100644
+--- a/templates/runtime/recomp_types.h
++++ b/templates/runtime/recomp_types.h
+@@ -927,11 +927,34 @@ recomp_func_t recomp_lookup_manual(uint32_t xbox_va);
+  * 2's static init, where the clobber demonstrably exists. It is the right tool
+  * for vtable-dispatch-heavy code and the wrong one for early boot.
+  */
++/* A preemption point, at every direct call.
++ *
++ * Under the guest CPU lock a thread lets go only in kernel calls, so a guest
++ * thread computing without one kept every other guest thread out, however
++ * long it ran -- the console would have preempted it on its quantum, or as
++ * soon as a higher-priority thread became ready. Darkwatch's CRI decode
++ * worker loops on its decoder without suspending while there is work, and
++ * starved the main thread that displays the frames: the chapter movie played
++ * black. A thread that has waited a quantum for the CPU raises
++ * g_recomp_preempt; the holder sees it here, between two guest instructions,
++ * and yields. One load and a branch per call when nobody waits.
++ *
++ * A build that links the lifted code without the kernel (a lifter test)
++ * defines RECOMP_NO_PREEMPT. */
++#ifdef RECOMP_NO_PREEMPT
++#define RECOMP_PREEMPT_POINT() ((void)0)
++#else
++extern volatile int g_recomp_preempt;
++void recomp_preempt(void);
++#define RECOMP_PREEMPT_POINT() do { if (g_recomp_preempt) recomp_preempt(); } while (0)
++#endif
++
+ #ifdef RECOMP_ABI_CHECK
+ void recomp_abi_violation_log(uint32_t va, uint32_t ebx0, uint32_t esi0,
+                               uint32_t edi0, uint32_t esp0);
+ #define RECOMP_ABI_CALL(va, fn) do { \
+     uint32_t _ab = g_ebx, _as = g_esi, _ad = g_edi, _ap = g_esp; \
++    RECOMP_PREEMPT_POINT(); \
+     (fn)(); \
+     if (g_ebx != _ab || g_esi != _as || g_edi != _ad || g_esp < _ap + 4) \
+         recomp_abi_violation_log((va), _ab, _as, _ad, _ap); \
+@@ -941,9 +964,9 @@ void recomp_abi_violation_log(uint32_t va, uint32_t ebx0, uint32_t esi0,
+  * keeps the counts (a project defines recomp_call_profile_hit). Diffing the counts
+  * of two situations shows which functions one of them runs and the other does not. */
+ void recomp_call_profile_hit(uint32_t va);
+-#define RECOMP_ABI_CALL(va, fn) do { recomp_call_profile_hit(va); (fn)(); } while(0)
++#define RECOMP_ABI_CALL(va, fn) do { RECOMP_PREEMPT_POINT(); recomp_call_profile_hit(va); (fn)(); } while(0)
+ #else
+-#define RECOMP_ABI_CALL(va, fn) (fn)()
++#define RECOMP_ABI_CALL(va, fn) do { RECOMP_PREEMPT_POINT(); (fn)(); } while(0)
+ #endif
+ 
+ /* A guarded arm of an indirect call. When a recorded run saw a call site

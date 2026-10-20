@@ -1,0 +1,2 @@
+# the SDK patch applies to LF files; keep it LF on every checkout
+patches/*.patch text eol=lf

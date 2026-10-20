@@ -1,0 +1,48 @@
+# extracted game data (never committed)
+game_files/
+*.iso
+*.xiso
+*.xiso.iso
+
+# python venv used by the toolkit pipeline
+.venv/
+
+# builds
+darkwatch/build/
+build/
+tools/xboxrecomp/build/
+
+# the toolkits are clones of upstream, patched via patches/*.patch
+tools/xboxrecomp/
+third_party/XboxXBERecomp/
+
+# generated recompiled C: ~133 MB of machine output, regenerate with
+# darkwatch/scripts/regenerate_recomp.sh
+darkwatch/src/recomp/gen/
+
+# bring-up artifacts
+icall_targets.dump
+icall_sites.dump
+xbox_kernel.log
+*.pb_dump
+frames/
+
+# unpacked release zips (exe, pdb, dumps, logs)
+Darkwatch-windows-x64-debug/
+
+# macOS
+.DS_Store
+darkwatch/build_abi/
+
+# videos (the longplay stays local)
+*.mp4
+*.mkv
+*.webm
+
+# kept local, not published: task briefs and run logs, and frame-capture dumps
+# (they hold the game's textures and shaders)
+/tasks/
+/references/current/capture-*/
+/references/current/**/*.bmp
+/references/current/**/*.hlsl
+/references/current/**/*.txt

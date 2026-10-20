@@ -1,0 +1,1463 @@
+diff --git a/cmake/XbeRecomp.cmake b/cmake/XbeRecomp.cmake
+index a237161..31108aa 100644
+--- a/cmake/XbeRecomp.cmake
++++ b/cmake/XbeRecomp.cmake
+@@ -23,18 +23,27 @@ set(SDL_CAMERA OFF CACHE BOOL "" FORCE)
+ FetchContent_Declare(SDL3 GIT_REPOSITORY https://github.com/libsdl-org/SDL.git GIT_TAG release-3.4.16 GIT_SHALLOW TRUE)
+ FetchContent_MakeAvailable(zydis tomlplusplus imgui SDL3)
+ 
+-# x86 to C++ recompiler
+-file(GLOB XBE_RECOMP_SOURCES CONFIGURE_DEPENDS ${XBE_SDK_DIR}/tools/recomp/*.cpp)
+-add_executable(xbe_recomp ${XBE_RECOMP_SOURCES})
+-target_include_directories(xbe_recomp PRIVATE ${XBE_SDK_DIR}/runtime ${XBE_SDK_DIR}/tools/recomp)
+-target_compile_definitions(xbe_recomp PRIVATE _CRT_SECURE_NO_WARNINGS)
+-target_link_libraries(xbe_recomp PRIVATE Zydis tomlplusplus::tomlplusplus)
++# x86 to C++ recompiler. A cross build cannot run the tools it builds: it takes XBE_RECOMP_EXECUTABLE, an
++# xbe_recomp built for the build machine, and does not build the tools for the target.
++if(CMAKE_CROSSCOMPILING)
++    if(NOT XBE_RECOMP_EXECUTABLE)
++        message(FATAL_ERROR "cross build: set XBE_RECOMP_EXECUTABLE to an xbe_recomp built for this machine")
++    endif()
++    set(XBE_RECOMP ${XBE_RECOMP_EXECUTABLE})
++else()
++    set(XBE_RECOMP xbe_recomp)
++    file(GLOB XBE_RECOMP_SOURCES CONFIGURE_DEPENDS ${XBE_SDK_DIR}/tools/recomp/*.cpp)
++    add_executable(xbe_recomp ${XBE_RECOMP_SOURCES})
++    target_include_directories(xbe_recomp PRIVATE ${XBE_SDK_DIR}/runtime ${XBE_SDK_DIR}/tools/recomp)
++    target_compile_definitions(xbe_recomp PRIVATE _CRT_SECURE_NO_WARNINGS)
++    target_link_libraries(xbe_recomp PRIVATE Zydis tomlplusplus::tomlplusplus)
+ 
+-# XDK signature scanner that writes a new title's config
+-add_executable(xbe_symbols ${XBE_SDK_DIR}/tools/symbols/main.cpp)
+-target_include_directories(xbe_symbols PRIVATE ${XBE_SDK_DIR}/runtime)
+-target_compile_definitions(xbe_symbols PRIVATE _CRT_SECURE_NO_WARNINGS)
+-target_link_libraries(xbe_symbols PRIVATE Zydis tomlplusplus::tomlplusplus)
++    # XDK signature scanner that writes a new title's config
++    add_executable(xbe_symbols ${XBE_SDK_DIR}/tools/symbols/main.cpp)
++    target_include_directories(xbe_symbols PRIVATE ${XBE_SDK_DIR}/runtime)
++    target_compile_definitions(xbe_symbols PRIVATE _CRT_SECURE_NO_WARNINGS)
++    target_link_libraries(xbe_symbols PRIVATE Zydis tomlplusplus::tomlplusplus)
++endif()
+ 
+ set(XBE_IMGUI_SOURCES
+     ${imgui_SOURCE_DIR}/imgui.cpp
+@@ -62,9 +71,9 @@ function(add_xbe_image target xbe config partitions game_dir)
+     add_custom_command(
+         OUTPUT ${GEN}/codegen.stamp
+         BYPRODUCTS ${GEN_SOURCES} ${GEN}/x86_recomp_shared.h ${GEN}/image_symbols.h
+-        COMMAND xbe_recomp config/${config} --xdk ${XBE_SDK_DIR}/xdk
++        COMMAND ${XBE_RECOMP} config/${config} --xdk ${XBE_SDK_DIR}/xdk
+         COMMAND ${CMAKE_COMMAND} -E touch ${GEN}/codegen.stamp
+-        DEPENDS xbe_recomp ${configs} ${CMAKE_CURRENT_SOURCE_DIR}/assets/${xbe}
++        DEPENDS ${XBE_RECOMP} ${configs} ${CMAKE_CURRENT_SOURCE_DIR}/assets/${xbe}
+         WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+         COMMENT "Recompiling ${xbe}"
+         VERBATIM)
+diff --git a/runtime/app/app.h b/runtime/app/app.h
+index d3519d5..c97848a 100644
+--- a/runtime/app/app.h
++++ b/runtime/app/app.h
+@@ -23,6 +23,12 @@ struct Settings {
+     bool vsync = true;
+     uint32_t aniso = 0;              // 0 as the game asks
+     std::string join_ip;                   // co-op: a host past the LAN the system link search also asks
++    // keyboard and mouse as player 1's controller (core/input.cpp): [keys] maps each control to keys, mouse_look moves
++    // the right stick, F2 frees or takes the mouse
++    bool keyboard = true;
++    bool mouse_look = true;
++    uint32_t mouse_sensitivity = 100;  // percent
++    std::vector<std::pair<std::string, std::string>> keys;  // control, comma-separated key names; empty: the defaults
+ };
+ 
+ Settings& Get();
+diff --git a/runtime/app/main.cpp b/runtime/app/main.cpp
+index 201bcaa..e186292 100644
+--- a/runtime/app/main.cpp
++++ b/runtime/app/main.cpp
+@@ -119,6 +119,21 @@ void ApplyNow() {
+     }
+ }
+ 
++// mouse look hides the cursor; ShowCursor counts per thread, so this runs on the window thread only
++void UpdateCursor() {
++    static bool hidden = false;
++    bool hide = input::MouseCaptured();
++    if (hide == hidden) return;
++    hidden = hide;
++    if (hide) {
++        while (ShowCursor(FALSE) >= 0) {
++        }
++    } else {
++        while (ShowCursor(TRUE) < 0) {
++        }
++    }
++}
++
+ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
+     {
+         std::lock_guard lock(UiLock());
+@@ -128,8 +143,20 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
+     switch (msg) {
+         case WM_KEYDOWN:
+             if (wp == VK_F3) DumpThreads();
++            if (wp == VK_F2 && !(lp & (1 << 30))) {  // not again while held
++                input::ToggleMouse();
++                UpdateCursor();
++            }
+             return 0;
++        case WM_INPUT:
++            input::RawInput(lp);
++            UpdateCursor();
++            break;
++        case WM_SETCURSOR:
++            UpdateCursor();
++            break;
+         case WM_ACTIVATE:
++            UpdateCursor();
+             if (LOWORD(wp) == WA_INACTIVE) {
+                 // a changed display mode steps aside for the desktop, minimized, and comes back on return; not while
+                 // handing over to the next instance, which runs in the same mode
+@@ -226,6 +253,8 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int) {
+     if (app::Instance() > 1) log += "-" + std::to_string(app::Instance());
+     logx::Init((app::ExeDir() / "logs").string(), log, relaunched);
+     app::Load();
++    // first run: the settings file with every default written out, key bindings included, for the player to edit
++    if (std::error_code ec; !std::filesystem::exists(app::ExeDir() / app::kGame.settings, ec)) app::Save();
+     if (app::kGame.init) app::kGame.init();
+     if (relaunched && !logx::kVerbose) LOGR("Relaunched: %s", IMAGE_XBE);
+     else app::LogSystem();
+diff --git a/runtime/app/settings.cpp b/runtime/app/settings.cpp
+index 4b494d0..043d254 100644
+--- a/runtime/app/settings.cpp
++++ b/runtime/app/settings.cpp
+@@ -15,6 +15,7 @@
+ #include <toml++/toml.hpp>
+ 
+ #include "app/app.h"
++#include "core/input.h"
+ #include "core/log.h"
+ 
+ namespace app {
+@@ -50,6 +51,14 @@ void Load() {
+     s.vsync = t["vsync"].value_or(s.vsync);
+     s.aniso = t["anisotropic_filtering"].value_or(s.aniso);
+     s.join_ip = t["join_ip"].value_or(s.join_ip);
++    s.keyboard = t["keyboard"].value_or(s.keyboard);
++    s.mouse_look = t["mouse_look"].value_or(s.mouse_look);
++    s.mouse_sensitivity = t["mouse_sensitivity"].value_or(s.mouse_sensitivity);
++    if (const toml::table* keys = t["keys"].as_table()) {
++        s.keys.clear();
++        for (const auto& [control, v] : *keys)
++            if (auto names = v.value<std::string>()) s.keys.emplace_back(std::string(control.str()), *names);
++    }
+     for (const Option& o : kGame.options) {
+         if (o.flag) *o.flag = t[o.key].value_or(*o.flag);
+         else *o.value = t[o.key].value_or(*o.value);
+@@ -68,7 +77,13 @@ toml::table Table() {
+                   {"fps_cap", int64_t(s.fps_cap)},
+                   {"vsync", s.vsync},
+                   {"anisotropic_filtering", int64_t(s.aniso)},
+-                  {"join_ip", s.join_ip}};
++                  {"join_ip", s.join_ip},
++                  {"keyboard", s.keyboard},
++                  {"mouse_look", s.mouse_look},
++                  {"mouse_sensitivity", int64_t(s.mouse_sensitivity)}};
++    toml::table keys;
++    for (const auto& [control, names] : input::Bindings()) keys.insert(control, names);
++    t.insert("keys", std::move(keys));
+     for (const Option& o : kGame.options) {
+         if (o.flag) t.insert(o.key, *o.flag);
+         else t.insert(o.key, int64_t(*o.value));
+diff --git a/runtime/core/input.cpp b/runtime/core/input.cpp
+index 8a0f1d0..1af1684 100644
+--- a/runtime/core/input.cpp
++++ b/runtime/core/input.cpp
+@@ -2,9 +2,24 @@
+ #include "core/input.h"
+ 
+ #include <algorithm>
++#include <atomic>
++#include <cctype>
++#include <cmath>
++#include <cstdlib>
++#include <cstring>
+ #include <iterator>
+ #include <mutex>
+ 
++#ifdef _WIN32
++#ifndef WIN32_LEAN_AND_MEAN
++#define WIN32_LEAN_AND_MEAN
++#endif
++#ifndef NOMINMAX
++#define NOMINMAX
++#endif
++#include <windows.h>
++#endif
++
+ #include <SDL3/SDL.h>
+ 
+ #include "app/app.h"
+@@ -14,6 +29,163 @@ namespace input {
+ 
+ namespace {
+ 
++// keyboard and mouse: each control of the console pad and the keys that press it
++enum Control {
++    kA, kB, kX, kY, kBlack, kWhite, kLT, kRT,  // the analog buttons, in Pad::analog order
++    kUp, kDown, kLeft, kRight, kStart, kBack, kLS, kRS,  // Pad::buttons bits
++    kLeftStickLeft, kLeftStickRight, kLeftStickUp, kLeftStickDown,
++    kRightStickLeft, kRightStickRight, kRightStickUp, kRightStickDown,
++    kControls
++};
++struct ControlName {
++    const char* name;
++    const char* keys;  // default
++};
++// settings file names and default keys: WASD to move, the mouse to look and fire, the arrows for the d-pad
++constexpr ControlName kControlNames[kControls] = {
++    {"a", "Space,Enter"}, {"b", "E,Backspace"}, {"x", "R"}, {"y", "Q"}, {"black", "C"}, {"white", "F"},
++    {"left_trigger", "Mouse2"}, {"right_trigger", "Mouse1"},
++    {"dpad_up", "Up"}, {"dpad_down", "Down"}, {"dpad_left", "Left"}, {"dpad_right", "Right"},
++    {"start", "Escape"}, {"back", "Tab"}, {"left_thumb", "LShift"}, {"right_thumb", "Mouse3,V"},
++    {"left_stick_left", "A"}, {"left_stick_right", "D"}, {"left_stick_up", "W"}, {"left_stick_down", "S"},
++    {"right_stick_left", "J"}, {"right_stick_right", "L"}, {"right_stick_up", "I"}, {"right_stick_down", "K"},
++};
++
++#ifdef _WIN32
++// a key name as the settings file has it: a letter or digit, F1-F12, Num0-Num9, or a name below
++int VirtualKey(std::string n) {
++    for (char& c : n) c = char(std::tolower(static_cast<unsigned char>(c)));
++    if (n.size() == 1 && std::isalnum(static_cast<unsigned char>(n[0]))) return std::toupper(static_cast<unsigned char>(n[0]));
++    if (n.size() >= 2 && n[0] == 'f' && std::isdigit(static_cast<unsigned char>(n[1]))) {
++        int f = std::atoi(n.c_str() + 1);
++        if (f >= 1 && f <= 12) return VK_F1 + f - 1;
++    }
++    if (n.size() == 4 && n.rfind("num", 0) == 0 && std::isdigit(static_cast<unsigned char>(n[3]))) return VK_NUMPAD0 + n[3] - '0';
++    static const std::pair<const char*, int> kNames[] = {
++        {"space", VK_SPACE},     {"enter", VK_RETURN},  {"escape", VK_ESCAPE},  {"esc", VK_ESCAPE},
++        {"tab", VK_TAB},         {"backspace", VK_BACK}, {"shift", VK_SHIFT},   {"lshift", VK_LSHIFT},
++        {"rshift", VK_RSHIFT},   {"ctrl", VK_CONTROL},  {"lctrl", VK_LCONTROL}, {"rctrl", VK_RCONTROL},
++        {"alt", VK_MENU},        {"lalt", VK_LMENU},    {"ralt", VK_RMENU},     {"up", VK_UP},
++        {"down", VK_DOWN},       {"left", VK_LEFT},     {"right", VK_RIGHT},    {"insert", VK_INSERT},
++        {"delete", VK_DELETE},   {"home", VK_HOME},     {"end", VK_END},        {"pageup", VK_PRIOR},
++        {"pagedown", VK_NEXT},   {"mouse1", VK_LBUTTON}, {"mouse2", VK_RBUTTON}, {"mouse3", VK_MBUTTON},
++        {"mouse4", VK_XBUTTON1}, {"mouse5", VK_XBUTTON2}, {"comma", VK_OEM_COMMA}, {"period", VK_OEM_PERIOD},
++    };
++    for (const auto& [name, vk] : kNames)
++        if (n == name) return vk;
++    return 0;
++}
++
++std::vector<int> g_keys[kControls];  // virtual keys per control, from the settings
++bool g_keys_read = false;
++
++void ReadBindings() {
++    if (g_keys_read) return;
++    g_keys_read = true;
++    for (int c = 0; c < kControls; c++) {
++        std::string names = kControlNames[c].keys;
++        for (const auto& [control, keys] : app::Get().keys)
++            if (control == kControlNames[c].name) names = keys;
++        size_t at = 0;
++        while (at <= names.size()) {
++            size_t end = names.find(',', at);
++            std::string one = names.substr(at, end == std::string::npos ? std::string::npos : end - at);
++            one.erase(0, one.find_first_not_of(' '));
++            one.erase(one.find_last_not_of(' ') + 1);
++            if (int vk = VirtualKey(one)) g_keys[c].push_back(vk);
++            else if (!one.empty()) LOGW("input: unknown key \"%s\" for %s", one.c_str(), kControlNames[c].name);
++            if (end == std::string::npos) break;
++            at = end + 1;
++        }
++    }
++}
++
++bool Held(int control) {
++    for (int vk : g_keys[control])
++        if (GetAsyncKeyState(vk) & 0x8000) return true;
++    return false;
++}
++
++// the mouse: raw motion summed by the window thread, read as the right stick at the speed it moved
++std::atomic<int> g_mouse_dx{0}, g_mouse_dy{0};
++std::atomic<bool> g_mouse_on{true};  // F2 toggles
++bool g_clipped = false;
++uint64_t g_mouse_t = 0;  // when the motion was last read, ms
++float g_look_x = 0, g_look_y = 0;
++
++uint64_t NowMs() { return GetTickCount64(); }
++
++bool Focused() { return app::Window() && GetForegroundWindow() == static_cast<HWND>(app::Window()); }
++
++// the cursor kept in a small box at the window's centre while the mouse looks, let go otherwise
++void Clip(bool on) {
++    if (on) {
++        RECT r;
++        if (!GetClientRect(static_cast<HWND>(app::Window()), &r)) return;
++        POINT c{(r.left + r.right) / 2, (r.top + r.bottom) / 2};
++        ClientToScreen(static_cast<HWND>(app::Window()), &c);
++        RECT box{c.x - 1, c.y - 1, c.x + 1, c.y + 1};
++        ClipCursor(&box);
++        g_clipped = true;
++    } else if (g_clipped) {
++        ClipCursor(nullptr);
++        g_clipped = false;
++    }
++}
++
++// a stick reading from mouse speed: past the game's dead zone at once, full at kFullSpeed pixels a second
++constexpr float kFullSpeed = 1200.0f;
++constexpr float kDeadZone = 0.22f;
++float Look(float pixels_per_second) {
++    float v = pixels_per_second * float(app::Get().mouse_sensitivity) / 100.0f / kFullSpeed;
++    if (std::fabs(v) < 1e-4f) return 0;
++    float m = std::min(std::fabs(v), 1.0f);
++    return std::copysign(kDeadZone + (1.0f - kDeadZone) * m, v);
++}
++
++int16_t Axis(float v) { return int16_t(std::clamp(v, -1.0f, 1.0f) * 32767.0f); }
++
++void AddKeyboardMouse(Pad& p) {
++    const app::Settings& s = app::Get();
++    if (!s.keyboard) return;
++    p.connected = true;  // a controller is plugged in for the game, even with none on the PC
++    bool focus = Focused();
++    bool look = focus && s.mouse_look && g_mouse_on;
++    Clip(look);
++    if (!focus) {
++        g_mouse_dx = 0;
++        g_mouse_dy = 0;
++        return;
++    }
++    ReadBindings();
++    for (int c = kA; c <= kRT; c++)
++        if (Held(c)) p.analog[c - kA] = 0xFF;
++    for (int c = kUp; c <= kRS; c++)
++        if (Held(c)) p.buttons |= uint16_t(1u << (c - kUp));
++    auto stick = [&](int neg, int pos) { return float(Held(pos)) - float(Held(neg)); };
++    float lx = stick(kLeftStickLeft, kLeftStickRight), ly = stick(kLeftStickDown, kLeftStickUp);
++    if (lx || ly) {
++        float n = std::sqrt(lx * lx + ly * ly);  // a diagonal is no faster than straight on
++        p.lx = Axis(lx / n);
++        p.ly = Axis(ly / n);
++    }
++    float rx = stick(kRightStickLeft, kRightStickRight), ry = stick(kRightStickDown, kRightStickUp);
++    // the mouse: read every 10 ms, held between
++    uint64_t now = NowMs();
++    if (now - g_mouse_t >= 10) {
++        float dt = g_mouse_t ? float(now - g_mouse_t) / 1000.0f : 0.01f;
++        g_mouse_t = now;
++        int dx = g_mouse_dx.exchange(0), dy = g_mouse_dy.exchange(0);
++        g_look_x = look ? Look(float(dx) / dt) : 0;
++        g_look_y = look ? Look(float(-dy) / dt) : 0;  // the mouse moved up looks up
++    }
++    if (!rx) rx = g_look_x;
++    if (!ry) ry = g_look_y;
++    if (rx) p.rx = Axis(rx);
++    if (ry) p.ry = Axis(ry);
++}
++#endif
++
+ // a controller takes the lowest free port when it is plugged in and keeps it until it is unplugged
+ std::mutex g_lock;
+ bool g_sdl = false;
+@@ -55,6 +227,13 @@ void UpdatePads() {
+ }  // namespace
+ 
+ void Init() {
++#ifdef _WIN32
++    // relative mouse motion for mouse look, also while the cursor is held still
++    if (app::Window()) {
++        RAWINPUTDEVICE rid{0x01, 0x02, 0, static_cast<HWND>(app::Window())};  // generic desktop, mouse
++        if (!RegisterRawInputDevices(&rid, 1, sizeof(rid))) LOGW("input: no raw mouse input (%lu)", GetLastError());
++    }
++#endif
+     // WGI reads the triggers apart and HIDAPI takes PlayStation and Switch pads. Reads come from the guest's threads,
+     // so SDL's own thread takes the device notices.
+     SDL_SetHint(SDL_HINT_JOYSTICK_THREAD, "1");
+@@ -106,6 +285,9 @@ Pad Poll(int port) {
+             p.rx = int16_t(axis(SDL_GAMEPAD_AXIS_RIGHTX));
+             p.ry = int16_t(-1 - axis(SDL_GAMEPAD_AXIS_RIGHTY));
+         }
++#ifdef _WIN32
++        if (port == 0) AddKeyboardMouse(p);
++#endif
+     }
+     if (app::kGame.pad) app::kGame.pad(port, p);
+     return p;
+@@ -118,4 +300,56 @@ void Rumble(int port, uint16_t left, uint16_t right) {
+     if (port >= 0 && port < 4 && g_pads[port]) SDL_RumbleGamepad(g_pads[port], left, right, 0);
+ }
+ 
++std::vector<std::pair<std::string, std::string>> Bindings() {
++    std::vector<std::pair<std::string, std::string>> out;
++    for (const ControlName& c : kControlNames) {
++        std::string keys = c.keys;
++        for (const auto& [control, names] : app::Get().keys)
++            if (control == c.name) keys = names;
++        out.emplace_back(c.name, keys);
++    }
++    return out;
++}
++
++#ifdef _WIN32
++void ReloadBindings() {
++    std::lock_guard lock(g_lock);
++    for (auto& keys : g_keys) keys.clear();
++    g_keys_read = false;
++}
++
++std::string KeyName(int vk) {
++    if ((vk >= 'A' && vk <= 'Z') || (vk >= '0' && vk <= '9')) return std::string(1, char(vk));
++    if (vk >= VK_F1 && vk <= VK_F12) return "F" + std::to_string(vk - VK_F1 + 1);
++    if (vk >= VK_NUMPAD0 && vk <= VK_NUMPAD9) return "Num" + std::to_string(vk - VK_NUMPAD0);
++    static const char* kNames[] = {"Space",  "Enter",  "Escape", "Tab",    "Backspace", "LShift", "RShift", "LCtrl",
++                                   "RCtrl",  "LAlt",   "RAlt",   "Up",     "Down",      "Left",   "Right",  "Insert",
++                                   "Delete", "Home",   "End",    "PageUp", "PageDown",  "Mouse1", "Mouse2", "Mouse3",
++                                   "Mouse4", "Mouse5", "Comma",  "Period", "Shift",     "Ctrl",   "Alt"};
++    for (const char* n : kNames)
++        if (VirtualKey(n) == vk) return n;
++    return "";
++}
++
++void RawInput(intptr_t lp) {
++    RAWINPUT ri;
++    UINT size = sizeof(ri);
++    if (GetRawInputData(reinterpret_cast<HRAWINPUT>(lp), RID_INPUT, &ri, &size, sizeof(RAWINPUTHEADER)) == UINT(-1)) return;
++    if (ri.header.dwType != RIM_TYPEMOUSE || (ri.data.mouse.usFlags & MOUSE_MOVE_ABSOLUTE)) return;
++    g_mouse_dx += ri.data.mouse.lLastX;
++    g_mouse_dy += ri.data.mouse.lLastY;
++}
++void ToggleMouse() {
++    g_mouse_on = !g_mouse_on;
++    LOGR("input: mouse %s (F2)", g_mouse_on ? "looks" : "is free");
++}
++bool MouseCaptured() { return app::Get().keyboard && app::Get().mouse_look && g_mouse_on && Focused(); }
++#else
++void ReloadBindings() {}
++std::string KeyName(int) { return ""; }
++void RawInput(intptr_t) {}
++void ToggleMouse() {}
++bool MouseCaptured() { return false; }
++#endif
++
+ }  // namespace input
+diff --git a/runtime/core/input.h b/runtime/core/input.h
+index 21f9051..785dd1d 100644
+--- a/runtime/core/input.h
++++ b/runtime/core/input.h
+@@ -1,5 +1,8 @@
+ #pragma once
+ #include <cstdint>
++#include <string>
++#include <utility>
++#include <vector>
+ 
+ namespace input {
+ 
+@@ -12,8 +15,19 @@ struct Pad {
+ };
+ 
+ void Init();  // window thread, before boot
+-// the controller on that port, then GameInfo::pad
++// the controller on that port, then GameInfo::pad; port 0 also has the keyboard and mouse, while the game window is
++// in front
+ Pad Poll(int port);
+ void Rumble(int port, uint16_t left, uint16_t right);
+ 
++// keyboard and mouse as player 1 (Windows)
++// control and its keys, as the settings file writes them: the settings' [keys], the defaults where they say nothing
++std::vector<std::pair<std::string, std::string>> Bindings();
++void ReloadBindings();     // after the settings' keys changed
++std::string KeyName(int vk);  // a virtual key as the settings file names it, empty for one it has no name for
++// the window procedure's: a WM_INPUT message, F2, and whether the cursor is hidden over the window
++void RawInput(intptr_t lp);
++void ToggleMouse();
++bool MouseCaptured();
++
+ }  // namespace input
+diff --git a/runtime/cpu/dispatch.cpp b/runtime/cpu/dispatch.cpp
+index 1e833b3..55cd28a 100644
+--- a/runtime/cpu/dispatch.cpp
++++ b/runtime/cpu/dispatch.cpp
+@@ -12,7 +12,7 @@
+ 
+ #ifdef _WIN32
+ #include <intrin.h>
+-#else
++#elif defined(__x86_64__) || defined(__i386__)
+ #include <x86intrin.h>
+ #endif
+ 
+diff --git a/runtime/gpu/backend.h b/runtime/gpu/backend.h
+index 14a066a..7d63489 100644
+--- a/runtime/gpu/backend.h
++++ b/runtime/gpu/backend.h
+@@ -65,4 +65,9 @@ inline std::atomic<uint64_t> g_perf_sync_late{0}, g_perf_sync_block{0};  // read
+ // F3: save the next frame, every draw and target, under diag::CaptureDir
+ inline std::atomic<bool> g_capture{false};
+ 
++// task-011: drop alpha from presented frames (the PS2 look: no ghosting from the
++// previous-frame haze). Off keeps the console's alpha (the Xbox look).
++extern std::atomic<bool> g_clear_alpha;
++void SetClearPresentedAlpha(bool on);
++
+ }  // namespace gpu
+diff --git a/runtime/gpu/d3d12.cpp b/runtime/gpu/d3d12.cpp
+index 16395fa..983ab66 100644
+--- a/runtime/gpu/d3d12.cpp
++++ b/runtime/gpu/d3d12.cpp
+@@ -13,16 +13,19 @@
+ #include <wrl/client.h>
+ 
+ #include <algorithm>
++#include <atomic>
+ #include <chrono>
+ #include <cmath>
+ #include <cstdio>
+ #include <cstring>
+ #include <deque>
+ #include <filesystem>
++#include <fstream>
+ #include <mutex>
+ #include <optional>
+ #include <unordered_map>
+ #include <unordered_set>
++#include <vector>
+ 
+ #include <imgui.h>
+ #include <backends/imgui_impl_dx12.h>
+@@ -70,6 +73,8 @@ struct Perf {
+     double sig = 0;
+     double texup = 0;
+     double compile = 0;
++    double hlsl = 0;    // D3DCompile part of compile
++    double pso_ms = 0;  // CreateGraphicsPipelineState part of compile
+     double clear = 0;
+     double copy = 0;
+     double present = 0;
+@@ -662,6 +667,8 @@ private:
+     std::unordered_map<uint32_t, uint64_t> target_used_;  // target address to the frame it was last used
+     std::unordered_map<uint64_t, Tex> textures_;  // by data address, a P8 texture's with its palette's above
+     std::unordered_map<uint64_t, ComPtr<ID3D12PipelineState>> blit_psos_;
++    ComPtr<ID3D12PipelineState> alpha_pso_;  // task-011: clears only alpha
++    DXGI_FORMAT alpha_fmt_ = DXGI_FORMAT_UNKNOWN;
+     Extension* ext_ = nullptr;
+     // one frame capture: every draw in a text file, each target as the frame leaves it, the textures it read
+     FILE* cap_ = nullptr;
+@@ -727,6 +734,8 @@ private:
+     std::deque<Report> reports_;
+     bool tearing_ = false;
+     uint64_t presents_ = 0;
++    uint32_t skip_i_ = 0;                                  // draws and clears this frame, for drawskip.txt
++    std::vector<std::pair<uint32_t, uint32_t>> skip_;     // frame draw numbers left out
+     double fps_ = 0;
+     std::chrono::steady_clock::time_point fps_t_ = std::chrono::steady_clock::now();
+     uint64_t fps_n_ = 0;
+@@ -1323,16 +1332,80 @@ void D3D12Backend::Blit(ID3D12Resource* src, DXGI_FORMAT fmt, const float uvrect
+     DrawFullScreen(EnsureBlitPipeline(o.rtv, o.over), cb.gpu, slot, si);
+ }
+ 
++// the shader blob disk cache beside the exe ("shadercache v1" in Compile's seed, so a
++// format change drops old files): <exe dir>\shadercache\<hash as 16 hex>.dxbc
++constexpr char kShaderCacheDir[] = "shadercache";
++constexpr char kShaderCacheVersion[] = "shadercache v1";
++constexpr size_t kShaderCacheMaxBytes = 64ull << 20;
++
++std::string ShaderCacheName(uint64_t hash) {
++    char name[24];
++    std::snprintf(name, sizeof(name), "%016llx.dxbc", (unsigned long long)hash);
++    return name;
++}
++
++// a DXBC container: 'DXBC', 16 bytes of digest, version, u32 total size, chunk count.
++// A truncated file still has its size field, so this catches the hand-corrupted case.
++bool ValidDxbc(const std::vector<char>& bytes) {
++    if (bytes.size() < 32) return false;
++    uint32_t magic = 0, size = 0;
++    std::memcpy(&magic, bytes.data(), 4);
++    std::memcpy(&size, bytes.data() + 24, 4);
++    return magic == 0x43425844u /* 'DXBC' */ && size == bytes.size();
++}
++
++bool LoadShaderCache(const std::filesystem::path& file, ComPtr<ID3DBlob>* out) {
++    std::error_code ec;
++    uint64_t size = std::filesystem::file_size(file, ec);
++    if (ec || size == 0 || size > kShaderCacheMaxBytes) return false;
++    std::ifstream in(file, std::ios::binary);
++    if (!in) return false;
++    std::vector<char> bytes((size_t)size);
++    in.read(bytes.data(), (std::streamsize)size);
++    if (!in || !ValidDxbc(bytes)) return false;
++    ComPtr<ID3DBlob> blob;
++    if (FAILED(D3DCreateBlob((SIZE_T)size, &blob))) return false;
++    std::memcpy(blob->GetBufferPointer(), bytes.data(), (size_t)size);
++    *out = blob;
++    return true;
++}
++
++void StoreShaderCache(const std::filesystem::path& file, ID3DBlob* code) {
++    std::error_code ec;
++    std::filesystem::create_directories(file.parent_path(), ec);
++    if (ec) return;
++    std::filesystem::path tmp = file;
++    tmp += ".tmp";
++    {
++        std::ofstream out(tmp, std::ios::binary | std::ios::trunc);
++        if (!out) return;
++        out.write(static_cast<const char*>(code->GetBufferPointer()), (std::streamsize)code->GetBufferSize());
++        out.close();
++        // rename only a complete write, so a crash never leaves half a file
++        if (!out) return;
++    }
++    std::filesystem::rename(tmp, file, ec);
++}
++
+ ID3DBlob* D3D12Backend::Compile(const std::string& src, const char* entry, const char* profile, uint64_t& hash) {
+-    // one source can hold several entry points
+-    uint64_t profile_seed = Hash(profile, std::strlen(profile));
++    // one source can hold several entry points; the version string in the seed drops
++    // old cache files when the format changes
++    uint64_t profile_seed = Hash(kShaderCacheVersion, std::strlen(kShaderCacheVersion));
++    profile_seed = Hash(profile, std::strlen(profile), profile_seed);
+     uint64_t entry_seed = Hash(entry, std::strlen(entry), profile_seed);
+     hash = Hash(src.data(), src.size(), entry_seed);
+     auto it = blobs_.find(hash);
+     if (it != blobs_.end()) return it->second.Get();
+     ComPtr<ID3DBlob> code;
++    std::filesystem::path cache_file = app::ExeDir() / kShaderCacheDir / ShaderCacheName(hash);
++    if (LoadShaderCache(cache_file, &code)) {
++        LOGD("d3d12: shader cache hit %s", cache_file.filename().string().c_str());
++        blobs_[hash] = code;
++        return code.Get();
++    }
+     ComPtr<ID3DBlob> err;
+     PerfScope perf_compile{g_perf.compile};
++    PerfScope perf_hlsl{g_perf.hlsl};
+     g_perf.shaders++;
+     HRESULT hr = D3DCompile(src.data(), src.size(), nullptr, nullptr, nullptr, entry, profile,
+                             D3DCOMPILE_OPTIMIZATION_LEVEL1, 0, &code, &err);
+@@ -1340,8 +1413,9 @@ ID3DBlob* D3D12Backend::Compile(const std::string& src, const char* entry, const
+         LOGE("d3d12: %s compile failed: %s", profile, err ? static_cast<const char*>(err->GetBufferPointer()) : "?");
+         LOGE("%s", src.c_str());
+         blobs_[hash] = nullptr;
+-        return nullptr;
++        return nullptr;  // failed compiles are never written to the disk cache
+     }
++    StoreShaderCache(cache_file, code.Get());
+     blobs_[hash] = code;
+     return code.Get();
+ }
+@@ -1365,6 +1439,18 @@ D3D12_GRAPHICS_PIPELINE_STATE_DESC D3D12Backend::FullScreenPipelineDesc(ID3DBlob
+     return d;
+ }
+ 
++// task-011: writes nothing but alpha 0, for clearing the presented frame's alpha
++const char* kAlphaHlsl = R"(
++struct O { float4 p : SV_Position; };
++O vs(uint id : SV_VertexID) {
++    O o;
++    float2 t = float2((id << 1) & 2, id & 2);
++    o.p = float4(t * float2(2, -2) + float2(-1, 1), 0, 1);
++    return o;
++}
++float4 psmain(O i) : SV_Target { return 0; }
++)";
++
+ ID3D12PipelineState* D3D12Backend::EnsureBlitPipeline(DXGI_FORMAT rtv, bool over) {
+     auto& pso = blit_psos_[uint64_t(rtv) | uint64_t(over) << 32];
+     if (pso) return pso.Get();
+@@ -1547,6 +1633,8 @@ ID3D12PipelineState* D3D12Backend::EnsurePipeline(const PsoKey& k, ID3DBlob* vs,
+     if (k.topo == uint32_t(Topology::Points)) ExpandPoints(d);
+     ComPtr<ID3D12PipelineState> pso;
+     g_perf.psos++;
++    PerfScope perf_pso{g_perf.compile};  // the driver compiles here too
++    PerfScope perf_psom{g_perf.pso_ms};
+     if (FAILED(dev_->CreateGraphicsPipelineState(&d, IID_PPV_ARGS(&pso)))) LOGE("d3d12: pipeline creation failed");
+     psos_[h] = pso;
+     return pso.Get();
+@@ -1584,6 +1672,8 @@ ID3D12Resource* D3D12Backend::BindTargetTexture(const State& s, int stage, const
+     sv.Format = t.depth ? DXGI_FORMAT_R24_UNORM_X8_TYPELESS : t.fmt;
+     // the console reads the pixels it is about to overwrite: give the draw a copy
+     if (feedback) return Feedback(t);
++    // F3: a target read as a texture, as the draw sees it, once per frame
++    if (cap_ && cap_seen_.insert(t.data | 1).second) Capture(t, "sampled", 1.0f);
+     Transition(t.res.Get(), t.state, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+     if (t.depth) info.shadow = ShadowDepthKind(d.format);
+     info.kind = kTex2D;
+@@ -1803,7 +1893,9 @@ D3D12_SAMPLER_DESC StageSampler(const State& s, int i, const DrawTextures& stage
+         sd.Filter = D3D12_FILTER_ANISOTROPIC;
+         sd.MaxAnisotropy = std::min<uint32_t>(an, 16);
+     }
+-    // clamp: the draw's coordinates all lie in 0..1 (UnitTexcoords), so wrap is read as clamp
++    // clamp: the draw's coordinates all lie in 0..1 (UnitTexcoords), so wrap is read as clamp; a linear texture is
++    // addressed in texels, where 0..1 says nothing
++    clamp = clamp && !stages.info[i].rect;
+     sd.AddressU = Address(clamp && t[kTssAddressU] == kTaddressWrap ? kTaddressClamp : t[kTssAddressU]);
+     sd.AddressV = Address(clamp && t[kTssAddressV] == kTaddressWrap ? kTaddressClamp : t[kTssAddressV]);
+     sd.AddressW = Address(t[kTssAddressW]);
+@@ -2031,13 +2123,16 @@ void FillCombinerConstants(const State& s, DrawConstants& c) {
+ constexpr float kGlowBoxTexels = 3.0f;  // console texels across the box each wide tap averages
+ 
+ void D3D12Backend::FillTexelConstants(int i, const TextureDesc& d, const DrawTextures& stages, DrawConstants& c) {
+-    c.texsize[i][0] = float(d.width);
+-    c.texsize[i][1] = float(d.height);
++    // a back buffer read as a texture: the title's texel coordinates are the multisampled buffer's
++    bool bb = stages.rt[i] && g_backbuffer_scale.Is(d.data);
++    float sx = bb ? g_backbuffer_scale.x : 1.0f, sy = bb ? g_backbuffer_scale.y : 1.0f;
++    c.texsize[i][0] = float(d.width) * sx;
++    c.texsize[i][1] = float(d.height) * sy;
+     // the console samples pixels at integer positions, D3D12 half a pixel on: targets are read half a texel back
+     if (!stages.rt[i]) return;
+     float k = stages.k[i];
+-    c.texsize[i][2] = -0.5f / (float(d.width) * k);
+-    c.texsize[i][3] = -0.5f / (float(d.height) * k);
++    c.texsize[i][2] = -0.5f / (float(d.width) * sx * k);
++    c.texsize[i][3] = -0.5f / (float(d.height) * sy * k);
+     // a 3 console texel box per tap keeps the console chain's glow width and brightness
+     if (stages.wide[i] > 0) {
+         float n = std::ceil(kGlowBoxTexels * stages.wide[i] * 0.5f);
+@@ -2243,6 +2338,11 @@ void D3D12Backend::CaptureDraw(const State& s, uint32_t prim, uint32_t count, co
+             cap_i_++, s.rt.data, bound_ds_ ? s.zs.data : 0, prim, count, s.vs_handle, s.ps ? s.ps->handle : 0, k.blend,
+             k.src, k.dst, k.zen, k.zfunc, k.zwrite, k.zbias, k.zslope, k.cull, k.wmask, c.pc[0][0], c.pc[0][1],
+             c.pc[0][2], c.pc[0][3]);
++    // vertex program constants titles commonly drive effects with (viewport c-38/c-37, a few around c16)
++    fprintf(cap_, " addr0 %u %u border0 %08X", s.tss[0][kTssAddressU], s.tss[0][kTssAddressV], s.tss[0][kTssBorderColor]);
++    if ((s.vs_handle & 1) && s.vs && !s.vs->program.empty())
++        for (int r : {58, 59, 112, 113, 114})
++            fprintf(cap_, " c%d %g %g %g %g", r, s.vsc[r][0], s.vsc[r][1], s.vsc[r][2], s.vsc[r][3]);
+     CaptureTextures(s, stages);
+ }
+ 
+@@ -2313,7 +2413,10 @@ void D3D12Backend::SetTextureViewsAndSamplers(const State& s, const Assembled& a
+         dev_->CreateShaderResourceView(stages.res[i], &sv, Cpu(srv_heap_.Get(), slot + i, srv_inc_));
+     }
+     cl_->SetGraphicsRootDescriptorTable(2, Gpu(srv_heap_.Get(), slot, srv_inc_));
+-    uint32_t samplers = EnsureStageSamplers(s, stages, UnitTexcoords(a));
++    // the vertex inputs are the coordinates the textures see only without a vertex program: a program computes its
++    // own (Darkwatch's screen haze makes texel coordinates up to twice the screen from 0..1 inputs, and wraps them)
++    bool program = (s.vs_handle & 1) && s.vs && !s.vs->program.empty();
++    uint32_t samplers = EnsureStageSamplers(s, stages, !program && UnitTexcoords(a));
+     cl_->SetGraphicsRootDescriptorTable(3, Gpu(smp_heap_.Get(), samplers, smp_inc_));
+ }
+ 
+@@ -2464,6 +2567,9 @@ void D3D12Backend::DeliverReports() {
+ void D3D12Backend::Draw(const State& s, uint32_t prim, uint32_t start, uint32_t count, const uint8_t* indices) {
+     PerfScope perf_draw{g_perf.draw};
+     g_perf.draws++;
++    uint32_t skip_at = skip_i_++;
++    for (const auto& r : skip_)
++        if (skip_at >= r.first && skip_at <= r.second) return;
+     if (cap_) CapStep(s.rt);
+     if (DepthCopy(s)) return;
+     DrawEnd draw_end{ext_};
+@@ -2561,6 +2667,7 @@ void D3D12Backend::ClearTarget(Target& t, const State& s, const ClearArgs& c, st
+ void D3D12Backend::Clear(const State& s, uint32_t count, const uint8_t* rects, uint32_t flags, uint32_t color, float z,
+                          uint32_t stencil) {
+     PerfScope perf_clear{g_perf.clear};
++    skip_i_++;
+     if (cap_) {
+         CapStep(s.rt);
+         fprintf(cap_, "%04u clear rt %08X ds %08X flags %X color %08X z %.3f\n", cap_i_++, s.rt.data, s.zs.data, flags,
+@@ -2727,6 +2834,7 @@ void D3D12Backend::CopyByRegion(const Target& src_t, ID3D12Resource* src_res, D3
+ void D3D12Backend::Copy(const Surface& src, const Surface& dst, uint32_t count, uint32_t src_rects,
+                         uint32_t dst_points) {
+     PerfScope perf_copy{g_perf.copy};
++    skip_i_++;
+     Target* src_t = FindTarget(src, false);
+     if (cap_) {
+         const char* from = "memory";
+@@ -2920,18 +3028,35 @@ void D3D12Backend::CountFps() {
+ void LogPerf() {
+     static PerfClock::time_point perf_start = PerfClock::now();
+     static uint64_t perf_frames = 0;
++    // a frame over 25 ms, with what this frame compiled: the stutters the once a second lines average away
++    static PerfClock::time_point last = PerfClock::now();
++    static double last_compile = 0, last_hlsl = 0, last_pso = 0;
++    static uint64_t last_shaders = 0, last_psos = 0, frame_no = 0;
++    double frame_ms = PerfMs(last);
++    last = PerfClock::now();
++    frame_no++;
++    if (frame_ms > 25.0)
++        LOGR("hitch: frame %llu took %.1f ms (compile %.1f ms, hlsl %.1f ms, pso %.1f ms, %llu new shaders, %llu new psos)", (unsigned long long)frame_no,
++             frame_ms, g_perf.compile - last_compile, g_perf.hlsl - last_hlsl, g_perf.pso_ms - last_pso,
++             (unsigned long long)(g_perf.shaders - last_shaders),
++             (unsigned long long)(g_perf.psos - last_psos));
++    last_compile = g_perf.compile;
++    last_hlsl = g_perf.hlsl;
++    last_pso = g_perf.pso_ms;
++    last_shaders = g_perf.shaders;
++    last_psos = g_perf.psos;
+     perf_frames++;
+     double el = PerfMs(perf_start);
+     if (el >= 1000.0) {
+         Perf& p = g_perf;
+         double n = double(perf_frames);
+         double host = p.draw + p.clear + p.copy + p.present + p.sync;
+-        LOGI("perf: %.1f fps %.2f ms/frame | host %.2f (draw %.2f: assemble %.2f bind %.2f [check %.2f, upload %.2f] "
++        LOGR("perf: %.1f fps %.2f ms/frame | host %.2f (draw %.2f: assemble %.2f bind %.2f [check %.2f, upload %.2f] "
+              "compile %.2f; clear %.2f copy %.2f sync %.2f present %.2f [swap %.2f wait %.2f]) other %.2f",
+              n * 1000.0 / el, el / n, host / n, p.draw / n, p.assemble / n, p.bind / n, p.sig / n, p.texup / n,
+              p.compile / n, p.clear / n, p.copy / n, p.sync / n, p.present / n, p.swap / n, p.wait / n,
+              (el - host) / n);
+-        LOGI("perf: title thread per frame: recording %.2f ms, waiting %.2f ms (%.1f waits: read-back %.2f "
++        LOGR("perf: title thread per frame: recording %.2f ms, waiting %.2f ms (%.1f waits: read-back %.2f "
+              "resource %.2f fence %.2f flush %.2f copy %.2f, next frame %.2f) | read-backs waited for: %.1f lock, "
+              "%.1f NOOVERWRITE",
+              g_perf_capture_ns.exchange(0) / n / 1e6, g_perf_wait_ns.exchange(0) / n / 1e6,
+@@ -2940,7 +3065,7 @@ void LogPerf() {
+              g_perf_wait_kind_ns[3].exchange(0) / n / 1e6, g_perf_wait_kind_ns[4].exchange(0) / n / 1e6,
+              g_perf_wait_kind_ns[5].exchange(0) / n / 1e6, g_perf_sync_block.exchange(0) / n,
+              g_perf_sync_late.exchange(0) / n);
+-        LOGI("perf: per frame %.0f draws (%.0f raw) %.0fk verts %.1f MB upload %.1f overflow | %.0f checks %.2f MB "
++        LOGR("perf: per frame %.0f draws (%.0f raw) %.0fk verts %.1f MB upload %.1f overflow | %.0f checks %.2f MB "
+              "hashed | %.1f tex uploads %.2f MB, %.1f new tex, %.1f new targets, %.1f target uploads, %.1f shrinks, "
+              "%.1f read-backs %.1f late | %llu shaders %llu psos this second",
+              p.draws / n, p.raw / n, p.verts / n / 1000.0, p.upload / n / 1048576.0, p.overflow / n, p.sigs / n,
+@@ -2948,6 +3073,8 @@ void LogPerf() {
+              p.targets / n, p.rtups / n, p.shrinks / n, p.syncs / n, p.lates / n,
+              (unsigned long long)p.shaders, (unsigned long long)p.psos);
+         g_perf = Perf{};
++        last_compile = 0;
++        last_shaders = last_psos = 0;
+         perf_start = PerfClock::now();
+         perf_frames = 0;
+     }
+@@ -2979,11 +3106,54 @@ void D3D12Backend::Present(const Surface& front) {
+     presents_++;
+     presents_seen_.store(presents_);
+     frame_++;
++    // drawskip.txt beside the exe: "first last" per line, frame draw numbers (draws and clears, as F3's frame.txt
++    // counts them) to leave out, read again every 30 frames; for finding which draw makes a fault on screen
++    skip_i_ = 0;
++    if (presents_ % 30 == 0) {
++        skip_.clear();
++        if (FILE* f = _wfopen((app::ExeDir() / "drawskip.txt").c_str(), L"r")) {
++            unsigned a, b;
++            while (fscanf(f, "%u %u", &a, &b) == 2) skip_.push_back({a, b});
++            fclose(f);
++        }
++    }
+     ReleaseOldTextures();
+     ResetFrame();
+     CountFps();
+     if (diag::Perf()) LogPerf();
+     ApplySettings();
++    // task-011: the console keeps no alpha in the presented frame (its back buffer
++    // behaves like X8 for alpha), or the haze would re-add the whole previous frame:
++    // crosshair/gun ghosts, the doubled door-hit screen. Clear just the presented
++    // frame's alpha, every present; in-frame alpha (DESTALPHA blends) is untouched.
++    // Off by default (SetClearPresentedAlpha): the Xbox look. On: the PS2 look.
++    if (g_clear_alpha) {
++        if (Target* pt = EnsureTarget(front, false)) {
++            if (!alpha_pso_ || alpha_fmt_ != pt->fmt) {
++                alpha_pso_.Reset();
++                uint64_t h;
++                ID3DBlob* vs = Compile(kAlphaHlsl, "vs", "vs_5_0", h);
++                ID3DBlob* ps = Compile(kAlphaHlsl, "psmain", "ps_5_0", h);
++                if (vs && ps) {
++                    D3D12_GRAPHICS_PIPELINE_STATE_DESC d = FullScreenPipelineDesc(vs, ps, pt->fmt);
++                    d.BlendState.RenderTarget[0].RenderTargetWriteMask = D3D12_COLOR_WRITE_ENABLE_ALPHA;
++                    if (SUCCEEDED(dev_->CreateGraphicsPipelineState(&d, IID_PPV_ARGS(&alpha_pso_))))
++                        alpha_fmt_ = pt->fmt;
++                }
++            }
++            if (alpha_pso_) {
++                Transition(pt->res.Get(), pt->state, D3D12_RESOURCE_STATE_RENDER_TARGET);
++                D3D12_CPU_DESCRIPTOR_HANDLE rh = Cpu(rtv_heap_.Get(), pt->view, rtv_inc_);
++                cl_->OMSetRenderTargets(1, &rh, FALSE, nullptr);
++                SetFullViewport(pt->w, pt->h);
++                uint32_t slot = AllocSrvSlots(2);
++                Alloc cb = Upload(256, 256);
++                DrawFullScreen(alpha_pso_.Get(), cb.gpu, slot, EnsureBlitSamplers());
++                pt->state = D3D12_RESOURCE_STATE_RENDER_TARGET;
++                bound_rt_ = bound_ds_ = nullptr;
++            }
++        }
++    }
+ }
+ 
+ void D3D12Backend::ApplySettings() {
+@@ -3292,4 +3462,9 @@ void D3D12Backend::SetGamma(const uint8_t* ramp) {
+ 
+ std::unique_ptr<Backend> CreateBackend() { return std::make_unique<D3D12Backend>(); }
+ 
++// task-011: set by the game's PS2-alpha-blending option (default off); read on the render thread
++std::atomic<bool> g_clear_alpha{false};
++
++void SetClearPresentedAlpha(bool on) { g_clear_alpha = on; }
++
+ }  // namespace gpu
+diff --git a/runtime/gpu/render_thread.cpp b/runtime/gpu/render_thread.cpp
+index def8fc5..28909fe 100644
+--- a/runtime/gpu/render_thread.cpp
++++ b/runtime/gpu/render_thread.cpp
+@@ -9,7 +9,9 @@
+ #define NOMINMAX
+ #endif
+ #include <windows.h>
++#if defined(__SSE4_1__) || defined(_M_X64)
+ #include <smmintrin.h>
++#endif
+ 
+ #include <algorithm>
+ #include <chrono>
+@@ -82,6 +84,7 @@ std::vector<Range> StateRanges() {
+ 
+ // equal bytes, 16 at a time: most of the state is compared on every draw
+ bool Same(const uint8_t* a, const uint8_t* b, size_t n) {
++#if defined(__SSE4_1__) || defined(_M_X64)
+     size_t i = 0;
+     __m128i diff = _mm_setzero_si128();
+     for (; i + 16 <= n; i += 16)
+@@ -89,6 +92,9 @@ bool Same(const uint8_t* a, const uint8_t* b, size_t n) {
+                                                 _mm_loadu_si128(reinterpret_cast<const __m128i*>(b + i))));
+     if (!_mm_testz_si128(diff, diff)) return false;
+     return i == n || !std::memcmp(a + i, b + i, n - i);
++#else
++    return !std::memcmp(a, b, n);  // hosts without SSE4.1 (arm64)
++#endif
+ }
+ 
+ using Clock = std::chrono::steady_clock;
+diff --git a/runtime/gpu/texture.cpp b/runtime/gpu/texture.cpp
+index 7c896d3..bee8db0 100644
+--- a/runtime/gpu/texture.cpp
++++ b/runtime/gpu/texture.cpp
+@@ -11,6 +11,8 @@
+ 
+ namespace gpu {
+ 
++BackBufferScale g_backbuffer_scale;
++
+ namespace {
+ 
+ const FormatInfo kUnknown{"unknown", 32, false, false, false, Host::None};
+diff --git a/runtime/gpu/texture.h b/runtime/gpu/texture.h
+index 6adb65a..4d1aea3 100644
+--- a/runtime/gpu/texture.h
++++ b/runtime/gpu/texture.h
+@@ -56,6 +56,21 @@ uint64_t DirtyEpoch(uint32_t data_va);
+ void ParseDeclaration(VertexShader& vs);
+ // SetPixelShaderConstant: the stages of the current shader mapped to these registers take the values
+ void ApplyPixelConstants(State& s, uint32_t first, uint32_t count);
++
++// A multisampled or supersampled back buffer is that many times larger on the console (D3DMULTISAMPLE_TYPE's low
++// byte: x scale, y scale). The SDK keeps its buffers at the presented size, but a title that reads a back buffer as a
++// linear texture addresses it in the larger buffer's texels. Set at CreateDevice; data addresses are virtual.
++struct BackBufferScale {
++    uint32_t data[3] = {};
++    uint32_t count = 0;
++    float x = 1, y = 1;
++    bool Is(uint32_t va) const {
++        for (uint32_t i = 0; i < count; i++)
++            if (data[i] == va) return true;
++        return false;
++    }
++};
++extern BackBufferScale g_backbuffer_scale;
+ uint32_t PackColor(const std::array<float, 4>& c);
+ 
+ }  // namespace gpu
+diff --git a/runtime/kernel/exports.h b/runtime/kernel/exports.h
+index f636701..e6f0423 100644
+--- a/runtime/kernel/exports.h
++++ b/runtime/kernel/exports.h
+@@ -7,6 +7,7 @@
+     static void kentry_##name(X86Context& ctx, uint8_t*) {                                               \
+         ::kernel::Args args{ctx};                                                                        \
+         uint32_t r = kimpl_##name(ctx, args);                                                            \
++        if (::kernel::g_trace_exports) ::kernel::TraceExport(#name, args, nargs, r);                     \
+         ::kernel::Return(ctx, r, nargs);                                                                 \
+     }                                                                                                    \
+     static const bool kreg_##name = (::kernel::RegisterExport(ord, #name, kentry_##name), true);         \
+diff --git a/runtime/kernel/files.cpp b/runtime/kernel/files.cpp
+index e34ffbb..f4c810a 100644
+--- a/runtime/kernel/files.cpp
++++ b/runtime/kernel/files.cpp
+@@ -493,6 +493,15 @@ static uint32_t Transfer(const Args& a, bool write, uint32_t pages) {
+     return Finish(*f, kSuccess, n, event, apc, apc_ctx, iosb);
+ }
+ 
++// The APC routine XAPI's ReadFileEx and WriteFileEx hand the kernel: the APC context is the title's completion
++// routine and the status block is its OVERLAPPED, so this calls routine(error, bytes, overlapped). Queued like any
++// file APC, it runs at the thread's next alertable wait.
++KERNEL_EXPORT(232, NtUserIoApcDispatcher, 3) {
++    uint32_t routine = a[0], iosb = a[1], status = R32(iosb);
++    CallGuest(ctx, routine, {(status & 0x80000000) ? NtStatusToDosError(status) : 0, R32(iosb + 4), iosb});
++    return 0;
++}
++
+ KERNEL_EXPORT(219, NtReadFile, 8) { return Transfer(a, false, 0); }
+ KERNEL_EXPORT(236, NtWriteFile, 8) { return Transfer(a, true, 0); }
+ // the buffer argument is an array of one page per element
+diff --git a/runtime/kernel/kernel.h b/runtime/kernel/kernel.h
+index 6e12a39..227b337 100644
+--- a/runtime/kernel/kernel.h
++++ b/runtime/kernel/kernel.h
+@@ -88,12 +88,16 @@ struct Args {
+     X86Context& ctx;
+     uint32_t operator[](int i) const { return R32(ctx.esp + 4 + 4 * uint32_t(i)); }
+ };
++// XBE_KTRACE: every stdcall export logged with its arguments, result and caller
++extern const bool g_trace_exports;
++void TraceExport(const char* name, const Args& a, int nargs, uint32_t result);
+ inline void Return(X86Context& ctx, uint32_t value, int stack_args) {
+     ctx.eax = value;
+     ctx.esp += 4 + 4 * uint32_t(stack_args);
+ }
+ 
+ // runs guest code from the host on the current guest thread
++uint32_t NtStatusToDosError(uint32_t status);  // RtlNtStatusToDosError
+ uint32_t CallGuest(X86Context& ctx, uint32_t fn, const uint32_t* args, size_t count);
+ inline uint32_t CallGuest(X86Context& ctx, uint32_t fn, std::initializer_list<uint32_t> args) {
+     return CallGuest(ctx, fn, args.begin(), args.size());
+diff --git a/runtime/kernel/memory.cpp b/runtime/kernel/memory.cpp
+index be024fa..a00164c 100644
+--- a/runtime/kernel/memory.cpp
++++ b/runtime/kernel/memory.cpp
+@@ -1,6 +1,7 @@
+ #include "kernel/memory.h"
+ 
+ #include <algorithm>
++#include <cstdio>
+ #include <cstring>
+ #include <map>
+ #include <mutex>
+@@ -12,7 +13,9 @@
+ #define WIN32_LEAN_AND_MEAN
+ #include <windows.h>
+ #else
++#include <fcntl.h>
+ #include <sys/mman.h>
++#include <unistd.h>
+ #endif
+ 
+ namespace mem {
+@@ -57,7 +60,18 @@ bool Init() {
+ #else
+     void* p = mmap(reinterpret_cast<void*>(0x100000000ull), size, PROT_NONE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE, -1, 0);
+     g_base = p == MAP_FAILED ? nullptr : static_cast<uint8_t*>(p);
++#ifdef __APPLE__
++    // no memfd on macOS: an unlinked POSIX shared memory object backs both physical views the same way
++    int fd = -1;
++    if (g_base) {
++        char name[64];
++        std::snprintf(name, sizeof name, "/xbe_ram_%d", int(getpid()));
++        fd = shm_open(name, O_RDWR | O_CREAT | O_EXCL, 0600);
++        if (fd >= 0) shm_unlink(name);
++    }
++#else
+     int fd = g_base ? memfd_create("ram", 0) : -1;
++#endif
+     if (fd < 0 || ftruncate(fd, kPhysicalSize) ||
+         mmap(g_base + kContiguousBase, kPhysicalSize, PROT_READ | PROT_WRITE, MAP_SHARED | MAP_FIXED, fd, 0) == MAP_FAILED ||
+         mmap(g_base + kWriteCombineBase, kPhysicalSize, PROT_READ | PROT_WRITE, MAP_SHARED | MAP_FIXED, fd, 0) == MAP_FAILED)
+@@ -71,6 +85,13 @@ bool Init() {
+     return true;
+ }
+ 
++#ifndef _WIN32
++static uint64_t HostPage() {
++    static const uint64_t page = uint64_t(sysconf(_SC_PAGESIZE));
++    return page;
++}
++#endif
++
+ // page commit map, one byte per 4 KB page
+ static std::vector<uint8_t> g_committed(0x100000, 0);
+ 
+@@ -85,12 +106,23 @@ bool Commit(uint32_t va, uint32_t size) {
+         return false;
+     }
+ #else
+-    if (mprotect(g_base + first, size_t(end - first), PROT_READ | PROT_WRITE)) {
+-        LOGE("memory: commit %08X+%X failed", first, uint32_t(end - first));
+-        return false;
++    // the host page may be larger than the guest's 4 KB (16 KB on Apple silicon): open the whole host pages
++    {
++        uint64_t hp = HostPage(), lo = first & ~(hp - 1), hi = (end + hp - 1) & ~(hp - 1);
++        if (mprotect(g_base + lo, size_t(hi - lo), PROT_READ | PROT_WRITE)) {
++            LOGE("memory: commit %08X+%X failed", first, uint32_t(end - first));
++            return false;
++        }
+     }
+ #endif
+-    for (uint64_t p = first; p < end; p += kPage) g_committed[size_t(p >> 12)] = 1;
++    for (uint64_t p = first; p < end; p += kPage) {
++#ifndef _WIN32
++        // a fresh commit reads zero; a host page larger than 4 KB kept the old bytes of a guest page decommitted
++        // inside it, so clear what was not committed before
++        if (!g_committed[size_t(p >> 12)]) std::memset(g_base + p, 0, kPage);
++#endif
++        g_committed[size_t(p >> 12)] = 1;
++    }
+     return true;
+ }
+ 
+@@ -102,8 +134,14 @@ void Decommit(uint32_t va, uint32_t size) {
+ #ifdef _WIN32
+     VirtualFree(g_base + first, size_t(end - first), MEM_DECOMMIT);
+ #else
+-    madvise(g_base + first, size_t(end - first), MADV_DONTNEED);
+-    mprotect(g_base + first, size_t(end - first), PROT_NONE);
++    // only host pages the range covers whole: a larger host page may still hold committed guest pages
++    {
++        uint64_t hp = HostPage(), lo = (uint64_t(first) + hp - 1) & ~(hp - 1), hi = end & ~(hp - 1);
++        if (hi > lo) {
++            madvise(g_base + lo, size_t(hi - lo), MADV_DONTNEED);
++            mprotect(g_base + lo, size_t(hi - lo), PROT_NONE);
++        }
++    }
+ #endif
+     for (uint64_t p = first; p < end; p += kPage) g_committed[size_t(p >> 12)] = 0;
+ }
+diff --git a/runtime/kernel/threads.cpp b/runtime/kernel/threads.cpp
+index 56fadb8..991eb04 100644
+--- a/runtime/kernel/threads.cpp
++++ b/runtime/kernel/threads.cpp
+@@ -90,6 +90,8 @@ void NameHostThread(const char* name) {
+     using Fn = HRESULT(WINAPI*)(HANDLE, PCWSTR);
+     static Fn set = reinterpret_cast<Fn>(reinterpret_cast<void*>(GetProcAddress(GetModuleHandleW(L"kernel32.dll"), "SetThreadDescription")));
+     if (set) set(GetCurrentThread(), w);
++#elif defined(__APPLE__)
++    pthread_setname_np(name);  // macOS names the calling thread only
+ #else
+     pthread_setname_np(pthread_self(), name);
+ #endif
+diff --git a/runtime/kernel/xboxkrnl.cpp b/runtime/kernel/xboxkrnl.cpp
+index 86cf14a..b28e776 100644
+--- a/runtime/kernel/xboxkrnl.cpp
++++ b/runtime/kernel/xboxkrnl.cpp
+@@ -2,6 +2,7 @@
+ #include <cctype>
+ #include <chrono>
+ #include <cstdio>
++#include <cstdlib>
+ #include <ctime>
+ 
+ #include "app/app.h"
+@@ -986,8 +987,18 @@ KERNEL_EXPORT(269, RtlCompareMemoryUlong, 3) {
+     return n;
+ }
+ 
+-KERNEL_EXPORT(301, RtlNtStatusToDosError, 1) {
+-    switch (a[0]) {
++const bool g_trace_exports = std::getenv("XBE_KTRACE") != nullptr;
++
++void TraceExport(const char* name, const Args& a, int nargs, uint32_t result) {
++    char b[160];
++    int n = std::snprintf(b, sizeof b, "ktrace %s(", name);
++    for (int i = 0; i < nargs && i < 6 && n < int(sizeof b) - 12; i++)
++        n += std::snprintf(b + n, sizeof b - size_t(n), i ? " %08X" : "%08X", a[i]);
++    LOGI("%s) = %08X from %08X", b, result, R32(a.ctx.esp));
++}
++
++uint32_t NtStatusToDosError(uint32_t status) {
++    switch (status) {
+         case kSuccess: return 0;
+         case kPending: return 997;
+         case kTimeout: return 1460;
+@@ -1010,10 +1021,12 @@ KERNEL_EXPORT(301, RtlNtStatusToDosError, 1) {
+         case kNotADirectory: return 267;
+         case 0xC000007F: return 112;  // disk full
+         case kDeviceNotConnected: return 1167;
+-        default: return (a[0] & 0xC0000000) ? 317 : 0;
++        default: return (status & 0xC0000000) ? 317 : 0;
+     }
+ }
+ 
++KERNEL_EXPORT(301, RtlNtStatusToDosError, 1) { return NtStatusToDosError(a[0]); }
++
+ // exceptions, debug, shutdown
+ 
+ // Exceptions dispatch like NT on x86: each handler of the fs:[0] chain is called (record, frame, context,
+diff --git a/runtime/xdk/d3d8.cpp b/runtime/xdk/d3d8.cpp
+index cb38363..77fc5b2 100644
+--- a/runtime/xdk/d3d8.cpp
++++ b/runtime/xdk/d3d8.cpp
+@@ -11,6 +11,7 @@
+ #include "app/app.h"
+ #include "core/diag.h"
+ #include "gpu/backend.h"
++#include "gpu/shaders.h"
+ #include "gpu/texture.h"
+ #include "gpu/vertex.h"
+ #include "xdk/d3d8.h"
+@@ -39,6 +40,10 @@ using namespace kernel;
+ #define SYM_D3DDevice_GetVertexShaderFunction FFFFFE03
+ #define HAS_D3DDevice_GetVertexShaderFunction 0
+ #endif
++#ifndef SYM_D3DDevice_LoadVertexShaderProgram
++#define SYM_D3DDevice_LoadVertexShaderProgram FFFFFE04
++#define HAS_D3DDevice_LoadVertexShaderProgram 0
++#endif
+ 
+ namespace d3d {
+ 
+@@ -275,6 +280,14 @@ HLE_STDCALL(Direct3D_CreateDevice, 6) {
+     uint32_t color_fmt = gpu::LinearColorFormat(fmt);
+     g_buffer_count = std::min<uint32_t>(count + 1, 3);
+     for (uint32_t i = 0; i < g_buffer_count; i++) g_buffers[i] = NewSurface(w, h, color_fmt, 4);
++    // D3DMULTISAMPLE_TYPE: bits 4-7 the x scale, 0-3 the y scale of the console's back buffer (0x0011 none)
++    uint32_t ms = R32(pp + 0x10);
++    auto& bs = gpu::g_backbuffer_scale;
++    bs.x = float(std::max<uint32_t>((ms >> 4) & 0xF, 1));
++    bs.y = float(std::max<uint32_t>(ms & 0xF, 1));
++    bs.count = g_buffer_count;
++    for (uint32_t i = 0; i < g_buffer_count; i++) bs.data[i] = mem::VirtualFromPhysical(R32(g_buffers[i] + 4));
++    LOGR("d3d: multisample type %X, back buffer read at %gx%g", ms, bs.x, bs.y);
+     g_depth = 0;
+     if (auto_depth) {
+         uint32_t zf = gpu::LinearDepthFormat(depth_fmt);
+@@ -842,12 +855,68 @@ HLE_FASTCALL(D3DDevice_SetVertexShaderConstantNotInlineFast, 1) {
+     return 0;
+ }
+ 
++// The GPU's vertex program memory: LoadVertexShader(handle, address) copies a shader's program to an instruction
++// slot, SelectVertexShader(handle, address) runs from that slot with the handle's declaration. A title loads several
++// programs side by side and selects among them (RenderWare's skinning: enemies, the first-person weapon). The
++// selected program runs to the instruction with the final bit (word 3, bit 0).
++namespace {
++constexpr uint32_t kVsSlots = 136;
++std::array<std::array<uint32_t, 4>, kVsSlots> g_vs_mem{};
++// a shader made for (handle, program) on select, so the backend keys its translation by program as usual
++std::unordered_map<uint64_t, std::shared_ptr<gpu::VertexShader>> g_vs_selected;
++}  // namespace
++
+ HLE_STDCALL(D3DDevice_LoadVertexShader, 2) {
+-    LOG_FIRST(4, "d3d: LoadVertexShader %08X at %u is not supported", a[0], a[1]);
++    std::lock_guard<std::recursive_mutex> lock(g_lock);
++    uint32_t h = a[0], at = a[1];
++    auto it = g_vs.find(h);
++    if (it == g_vs.end() || at >= kVsSlots) {
++        LOG_FIRST(8, "d3d: LoadVertexShader %08X at %u: unknown shader or slot", h, at);
++        return 0;
++    }
++    const auto& prog = it->second->program;
++    for (size_t i = 0; i + 4 <= prog.size() && at + i / 4 < kVsSlots; i += 4)
++        std::memcpy(g_vs_mem[at + i / 4].data(), &prog[i], 16);
+     return 0;
+ }
++
++// LoadVertexShaderProgram(function, address): a program token stream (type | instructions << 16, then 4 dwords each)
++// straight into the slots, with no shader object; a later SelectVertexShader runs it with a declaration-only shader
++HLE_STDCALL(D3DDevice_LoadVertexShaderProgram, 2) {
++    std::lock_guard<std::recursive_mutex> lock(g_lock);
++    uint32_t func = a[0], at = a[1];
++    if (!func || at >= kVsSlots) return 0;
++    uint32_t n = R32(func) >> 16;
++    for (uint32_t i = 0; i < n && at + i < kVsSlots; i++)
++        for (uint32_t w = 0; w < 4; w++) g_vs_mem[at + i][w] = R32(func + 4 + (i * 4 + w) * 4);
++    return 0;
++}
++
+ HLE_STDCALL(D3DDevice_SelectVertexShader, 2) {
+-    LOG_FIRST(4, "d3d: SelectVertexShader %08X at %u is not supported", a[0], a[1]);
++    std::lock_guard<std::recursive_mutex> lock(g_lock);
++    uint32_t h = a[0], at = a[1];
++    auto it = g_vs.find(h);
++    if (!(h & 1) || it == g_vs.end() || at >= kVsSlots) {
++        LOG_FIRST(8, "d3d: SelectVertexShader %08X at %u: no declaration to run it with", h, at);
++        return 0;
++    }
++    std::vector<uint32_t> prog;
++    for (uint32_t s = at; s < kVsSlots; s++) {
++        prog.insert(prog.end(), g_vs_mem[s].begin(), g_vs_mem[s].end());
++        if (g_vs_mem[s][3] & 1) break;
++    }
++    uint64_t key = gpu::Hash(prog.data(), prog.size() * 4, h);
++    auto& vs = g_vs_selected[key];
++    if (!vs) {
++        vs = std::make_shared<gpu::VertexShader>(*it->second);
++        vs->program = std::move(prog);
++        vs->program_type = 0x2078;
++        vs->hash = 0;
++    }
++    g_state.vs_handle = h;
++    g_state.vs = vs;
++    for (auto& [reg, v] : vs->constants)
++        if (reg < 192) g_state.vsc[reg] = v;
+     return 0;
+ }
+ HLE_STDCALL(D3DDevice_SetShaderConstantMode, 1) {
+@@ -857,20 +926,30 @@ HLE_STDCALL(D3DDevice_SetShaderConstantMode, 1) {
+     return 0;
+ }
+ 
++// The XDK's pixel shader object: two reference counts, a pointer to the definition, and the definition copied in
++// after them. Titles read it: Darkwatch locates its shaders' definitions in that copy and edits their constants
++// there, so the object keeps this shape and the shader is rebuilt from the copy whenever it changed.
++constexpr uint32_t kOwnPsDefinition = 0x8;  // where this host's own objects keep the pointer, as XDK 5849 does
++constexpr uint32_t kOwnPsSize = 0xC + sizeof(gpu::PixelShader::def);
++static std::unordered_set<uint32_t> g_ps_own;
++
+ HLE_STDCALL(D3DDevice_CreatePixelShader, 2) {
+     std::lock_guard<std::recursive_mutex> lock(g_lock);
+-    auto ps = std::make_shared<gpu::PixelShader>();
+-    std::memcpy(ps->def, HostPtr(a[0]), sizeof(ps->def));
+-    uint32_t rec = mem::AllocSystem(16, 16);
+-    ps->handle = rec;
+-    g_ps[rec] = ps;
++    uint32_t rec = mem::AllocSystem(kOwnPsSize, 16);
++    if (!rec) return 0x8007000E;  // E_OUTOFMEMORY, as the XDK returns
++    W32(rec, 1);
++    W32(rec + 4, 1);
++    W32(rec + kOwnPsDefinition, rec + 0xC);
++    std::memcpy(HostPtr(rec + 0xC), HostPtr(a[0]), sizeof(gpu::PixelShader::def));
++    g_ps_own.insert(rec);
+     W32(a[1], rec);
+     return 0;
+ }
+ 
+ HLE_STDCALL(D3DDevice_DeletePixelShader, 1) {
+     std::lock_guard<std::recursive_mutex> lock(g_lock);
+-    if (g_ps.erase(a[0])) mem::FreeSystem(a[0]);
++    g_ps.erase(a[0]);
++    if (g_ps_own.erase(a[0])) mem::FreeSystem(a[0]);
+     return 0;
+ }
+ 
+@@ -878,24 +957,20 @@ HLE_STDCALL(D3DDevice_SetPixelShader, 1) {
+     std::lock_guard<std::recursive_mutex> lock(g_lock);
+     g_state.ps = nullptr;
+     if (!a[0]) return 0;
+-    auto it = g_ps.find(a[0]);
+-    if (it != g_ps.end()) {
+-        g_state.ps = it->second;
+-    } else if (XDK_PixelShader_Definition != xdk::kUnknown) {
+-        // made by library code the title inlined: the object points at its definition, handles are reused
+-        static std::unordered_map<uint32_t, std::shared_ptr<gpu::PixelShader>> made;
+-        const void* def = HostPtr(R32(a[0] + XDK_PixelShader_Definition));
+-        auto& ps = made[a[0]];
+-        if (!ps || std::memcmp(ps->def, def, sizeof(ps->def))) {
+-            ps = std::make_shared<gpu::PixelShader>();
+-            ps->handle = a[0];
+-            std::memcpy(ps->def, def, sizeof(ps->def));
+-        }
+-        g_state.ps = ps;
+-    } else {
++    // ours, or made by library code the title inlined: either way the object points at its definition
++    uint32_t at = g_ps_own.count(a[0]) ? kOwnPsDefinition : XDK_PixelShader_Definition;
++    if (at == xdk::kUnknown) {
+         LOG_FIRST(8, "d3d: SetPixelShader with unknown handle %08X", a[0]);
+         return 0;
+     }
++    const void* def = HostPtr(R32(a[0] + at));
++    auto& ps = g_ps[a[0]];
++    if (!ps || std::memcmp(ps->def, def, sizeof(ps->def))) {
++        ps = std::make_shared<gpu::PixelShader>();
++        ps->handle = a[0];
++        std::memcpy(ps->def, def, sizeof(ps->def));
++    }
++    g_state.ps = ps;
+     // the definition loads the combiner state like the XDK pushes it
+     const uint32_t* d = g_state.ps->def;
+     auto put = [&](uint32_t method, uint32_t v) { g_state.simple[method >> 2] = v; };
+@@ -929,11 +1004,23 @@ HLE_STDCALL(D3DDevice_SetPixelShaderConstant, 3) {
+ 
+ // drawing
+ 
++// The console stamps each vertex buffer a draw reads with the fence that follows it, in the header's lock field (+8).
++// Titles read that field themselves: a pool of dynamic buffers (RenderWare's) hands out one whose fence
++// IsFencePending says is done, and refills it. Left at 0, every buffer looked idle and was refilled before the render
++// thread drew from it.
++static void StampStreams() {
++    if (!g_backend) return;
++    uint32_t fence = g_backend->Fence();
++    for (const auto& st : g_state.streams)
++        if (st.vb) W32(st.vb + 8, fence);
++}
++
+ HLE_STDCALL(D3DDevice_DrawVertices, 3) {
+     std::lock_guard<std::recursive_mutex> lock(g_lock);
+     Walk(Dev(kDevPush));  // a visibility test begun since the last draw counts this one
+     SyncDeferred();
+     if (g_backend) g_backend->Draw(g_state, a[0], a[1], a[2], nullptr);
++    StampStreams();
+     return 0;
+ }
+ 
+@@ -943,6 +1030,7 @@ HLE_STDCALL(D3DDevice_DrawIndexedVertices, 3) {
+     SyncDeferred();
+     const uint8_t* indices = a[2] ? static_cast<const uint8_t*>(HostPtr(a[2])) : nullptr;
+     if (g_backend) g_backend->Draw(g_state, a[0], 0, a[1], indices);
++    StampStreams();
+     return 0;
+ }
+ 
+@@ -1064,6 +1152,19 @@ void Walk(uint32_t end) {
+             bool last = true;  // the slot's last component
+             std::memcpy(&f, &v, 4);
+             ApplyVisibilityMethod(m, v);
++            // vertex shader constants the title pushes itself (the XDK's inline constant macros, RenderWare's
++            // skinning and lighting): the load slot, then x y z w per slot, moving on after w
++            static uint32_t const_load = 0, const_part = 0;
++            if (m == 0x1EA4) {  // SET_TRANSFORM_CONSTANT_LOAD
++                const_load = v;
++                const_part = 0;
++                continue;
++            }
++            if (m >= 0x0B80 && m < 0x0C00) {  // SET_TRANSFORM_CONSTANT
++                if (const_load < 192) g_state.vsc[const_load][const_part] = f;
++                if (++const_part == 4) const_part = 0, const_load++;
++                continue;
++            }
+             if (m == 0x17FC) {  // begin/end, 0 ends
+                 if (v) {
+                     g_im_prim = v;
+diff --git a/runtime/xdk/dsound.cpp b/runtime/xdk/dsound.cpp
+index 05977b5..4213ca6 100644
+--- a/runtime/xdk/dsound.cpp
++++ b/runtime/xdk/dsound.cpp
+@@ -254,6 +254,11 @@ void Deactivate(Voice& v) {
+     if (v.active) v.active = v.paused = v.ending = false;
+ }
+ 
++// The APU's global sample counter, XGSCNT. Library code outside DirectSound reads the register itself: Darkwatch's
++// XACT engine times its cues by it. Its page is plain memory here, advanced by the frames the mixer renders.
++constexpr uint32_t kApuSampleCount = 0xFE80200C;
++std::atomic<bool> g_apu_counter{false};
++
+ void Render(float* out, uint32_t frames) {
+     std::memset(out, 0, frames * 2 * sizeof(float));
+     std::lock_guard<std::recursive_mutex> lock(g_lock);
+@@ -321,6 +326,7 @@ void Render(float* out, uint32_t frames) {
+         }
+     }
+     for (uint32_t i = 0; i < frames * 2; i++) out[i] = std::clamp(out[i], -1.0f, 1.0f);
++    if (g_apu_counter) W32(kApuSampleCount, R32(kApuSampleCount) + frames);
+ }
+ 
+ int64_t NowMs() {
+@@ -422,7 +428,7 @@ float F32(uint32_t v) {
+ // DSOUND objects are the host's; .XTLID names linked exports that would still run console code on them
+ static void AuditExports() {
+     static const uint32_t handled[] = {
+-        SYM(DirectSoundCreate), SYM(IDirectSound_Release), SYM(DirectSoundUseFullHRTF), SYM(DirectSoundUseLightHRTF),
++        SYM(DirectSoundCreate), SYM(IDirectSound_Release),
+         SYM(IDirectSound_GetSpeakerConfig),
+         SYM(IDirectSound_SetEffectData), SYM(IDirectSound_EnableHeadphones), SYM(IDirectSound_SetMixBinHeadroom),
+         SYM(IDirectSound_CommitDeferredSettings), SYM(IDirectSound_SetDopplerFactor), SYM(IDirectSound_SetRolloffFactor),
+@@ -471,6 +477,10 @@ static void AuditExports() {
+ HLE_STDCALL(DirectSoundCreate, 3) {
+     std::lock_guard<std::recursive_mutex> lock(g_lock);
+     Start();
++    if (!g_apu_counter) {
++        mem::Commit(kApuSampleCount & ~0xFFFu, 0x1000);
++        g_apu_counter = true;
++    }
+     if (!g_ds) {
+         AuditExports();
+         g_ds = mem::AllocSystem(0x40);
+@@ -480,8 +490,8 @@ HLE_STDCALL(DirectSoundCreate, 3) {
+     return 0;
+ }
+ HLE_STDCALL(IDirectSound_Release, 1) { return 0; }
+-HLE_STDCALL(DirectSoundUseFullHRTF, 0) { return 0; }
+-HLE_STDCALL(DirectSoundUseLightHRTF, 0) { return 0; }
++// DirectSoundUseFullHRTF and DirectSoundUseLightHRTF keep their recompiled bodies: they only install the library's
++// HRTF function table, and library code that still runs (XACT's 3D voices in Darkwatch) calls through it.
+ HLE_STDCALL(IDirectSound_GetSpeakerConfig, 2) {
+     W32(a[1], 0);  // DSSPEAKER_STEREO
+     return 0;
