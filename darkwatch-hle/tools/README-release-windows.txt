@@ -20,6 +20,11 @@ copy of Darkwatch for the original Xbox (USA release).
    that the game starts straight away.
 4. Windows Firewall may ask whether Darkwatch.exe may use the network (the
    game's system link). Cancel is fine for single player.
+5. The first time you play, shaders compile as the game meets them (short
+   stutters). They are kept for your graphics driver; after a driver update
+   they compile again at launch behind a progress bar. Skip (B, Esc) goes
+   straight to the game; "Don't show this again" (X, Space) turns this off,
+   and PC settings, Graphics, "Precompile shaders" turns it back on.
 
 Controls
 --------
@@ -84,7 +89,7 @@ PC settings
   F1 (or Back+Start on a controller) opens the PC settings menu anywhere;
   it is also PC SETTINGS in the pause menu and in the main menu's OPTIONS
   (where Xbox Live used to be). Pages: Display (mode, resolution, render
-  resolution, frame rate cap, V-Sync), Graphics (PS2 alpha blending, anisotropic filtering: 16x by default),
+  resolution, frame rate cap, V-Sync), Graphics (PS2 alpha blending, anisotropic filtering: 16x by default, precompile shaders),
   Controls (keyboard and mouse, sensitivity, key bindings), Game (frame rate
   counter). Changes apply at once; a new display mode asks to keep it and
   goes back after 15 s. Settings are saved when the menu closes. Exit to

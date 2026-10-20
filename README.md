@@ -34,6 +34,9 @@ Day-to-day progress, findings and open bugs are in [STATUS.md](STATUS.md).
 **Runs natively**
 - Statically recompiled game code: no CPU emulation, no JIT.
 - Direct3D 12 renderer with a **shader disk cache**: shaders compile once, later runs load without hitches.
+- **Shader pre-compile at launch:** the pipelines earlier play used are kept for your graphics driver. When the
+  driver changes (or the cache is cleared) they compile again at launch behind a progress bar, with **Skip**
+  and **Don't show this again** (turn it back on under PC settings, Graphics).
 - XAudio2 sound, including the game's XACT audio.
 
 **PC settings menu**, in game: press **F1**, press **Back + Start** on a controller, or pick **PC SETTINGS**
@@ -128,7 +131,7 @@ The full list is in [ROADMAP.md](ROADMAP.md). In short:
 2. **More PC options:** field of view and viewmodel FOV, monitor choice, MSAA / SMAA, draw distance,
    FMV scaling, pause on focus loss, mouse invert, HDR10.
 3. **Polish:** a native EXIT TO DESKTOP entry in the game's own menus, hide the leftover Xbox Live notices,
-   background shader compiles so even the first run does not stutter.
+   background shader compiles so even the very first run does not stutter.
 4. **More platforms:** macOS, then Android.
 
 ## How it works

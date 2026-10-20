@@ -149,12 +149,16 @@ index a237161..130f15f 100644
 +        COMMAND ${CMAKE_COMMAND} -E rm -f ${XBE_COMPILER_DIR}/work/${target}/built.txt)
  endfunction()
 diff --git a/runtime/app/app.h b/runtime/app/app.h
-index d3519d5..33e3448 100644
+index d3519d5..92b4fd3 100644
 --- a/runtime/app/app.h
 +++ b/runtime/app/app.h
-@@ -23,6 +23,12 @@ struct Settings {
+@@ -22,7 +22,16 @@ struct Settings {
+     uint32_t fps_cap = 60;           // 0 unlimited
      bool vsync = true;
      uint32_t aniso = 0;              // 0 as the game asks
++    // the pipelines earlier runs used are compiled at launch when the driver lacks them (gpu/d3d12.cpp); the
++    // pre-compile window's "Don't show this again" turns it off
++    bool precompile_shaders = true;
      std::string join_ip;                   // co-op: a host past the LAN the system link search also asks
 +    // keyboard and mouse as player 1's controller (core/input.cpp): [keys] maps each control to keys, mouse_look moves
 +    // the right stick, F2 frees or takes the mouse
@@ -165,7 +169,7 @@ index d3519d5..33e3448 100644
  };
  
  Settings& Get();
-@@ -48,6 +54,10 @@ struct GameFiles {
+@@ -48,6 +57,10 @@ struct GameFiles {
      std::vector<uint8_t> xbe;
  };
  bool FindGame(GameFiles& game);
@@ -176,6 +180,20 @@ index d3519d5..33e3448 100644
  int Instance();  // --instance N on the command line, 0 without: a second copy on this PC for system link tests
  void* Window();  // HWND
  // boot splash: GameInfo::splash .bmp or .png beside the exe, up before the game window
+@@ -60,6 +73,13 @@ bool StartHandover();   // window thread, at launch; true: the game window start
+ bool HandingOver();
+ void FinishHandover();  // any thread but the window thread's: opens the game window, lets the old instance go
+ 
++// the shader pre-compile's window (precompile.cpp), for the renderer at launch; it has its own thread and shows itself
++// only once the work takes a moment. new_driver: the pipelines were ready for another driver than this one
++void OpenPrecompileWindow(uint32_t total, bool new_driver);
++void PrecompileStep();     // one more done, any thread
++bool PrecompileSkipped();  // Skip was pressed: the rest compile as the game meets them
++void ClosePrecompileWindow();  // and with "Don't show this again" ticked, turns precompile_shaders off and saves
++
+ // held around ImGui: the window thread's messages and the renderer's frame
+ std::recursive_mutex& UiLock();
+ 
 diff --git a/runtime/app/game_code.cpp b/runtime/app/game_code.cpp
 new file mode 100644
 index 0000000..0582ed9
@@ -1036,8 +1054,278 @@ index 201bcaa..3d574d3 100644
  
      bool splash = app::OpenSplash(), handover = app::StartHandover();
  
+diff --git a/runtime/app/precompile.cpp b/runtime/app/precompile.cpp
+new file mode 100644
+index 0000000..5be5a3a
+--- /dev/null
++++ b/runtime/app/precompile.cpp
+@@ -0,0 +1,264 @@
++// The shader pre-compile's window: the renderer compiles at launch the pipelines earlier runs used, when this driver
++// does not have them yet (gpu/d3d12.cpp), and this shows how far it is. The window has a thread of its own and shows
++// itself only once the work has taken a moment, so a launch with everything ready shows nothing.
++#ifndef WIN32_LEAN_AND_MEAN
++#define WIN32_LEAN_AND_MEAN
++#endif
++#ifndef NOMINMAX
++#define NOMINMAX
++#endif
++#include <windows.h>
++#include <xinput.h>
++
++#include <algorithm>
++#include <atomic>
++#include <chrono>
++#include <string>
++#include <thread>
++
++#include "app/app.h"
++#include "core/input.h"
++#include "core/log.h"
++
++namespace app {
++
++namespace {
++
++// the window's colours, as the first start's (game_code.cpp)
++constexpr COLORREF kBackground = RGB(10, 11, 10);
++constexpr COLORREF kText = RGB(227, 232, 219);
++constexpr COLORREF kDim = RGB(145, 153, 138);
++constexpr COLORREF kBarEmpty = RGB(28, 33, 26);
++constexpr COLORREF kBarFull = RGB(145, 158, 130);
++
++constexpr int64_t kShowAfterMs = 300;  // work done sooner than this never shows the window
++constexpr UINT kCloseWindow = WM_APP + 1;
++
++std::atomic<uint32_t> g_done{0};
++uint32_t g_total = 0;
++bool g_new_driver = false;
++std::atomic<bool> g_skipped{false};
++std::atomic<bool> g_dont_show{false};
++std::atomic<HWND> g_window{nullptr};
++std::thread g_thread;
++int64_t g_opened = 0;
++
++int64_t NowMs() {
++    using namespace std::chrono;
++    return duration_cast<milliseconds>(steady_clock::now().time_since_epoch()).count();
++}
++
++void DrawLine(HDC dc, RECT row, const std::wstring& text, COLORREF color, UINT align) {
++    SetTextColor(dc, color);
++    DrawTextW(dc, text.c_str(), int(text.size()), &row, align | DT_SINGLELINE | DT_VCENTER | DT_NOPREFIX);
++}
++
++void FillBox(HDC dc, const RECT& box, COLORREF color) {
++    HBRUSH brush = CreateSolidBrush(color);
++    FillRect(dc, &box, brush);
++    DeleteObject(brush);
++}
++
++// top to bottom: a heading, the count, the bar, then the don't show box and Skip
++struct Layout {
++    RECT heading;
++    RECT count;
++    RECT bar;
++    RECT bottom;
++    RECT skip;
++    RECT dont_show;
++};
++
++Layout Arrange(const RECT& client, int unit) {
++    Layout l;
++    l.heading = {client.left + unit, client.top + unit, client.right - unit, client.top + unit * 3};
++    l.count = l.heading;
++    OffsetRect(&l.count, 0, unit * 2);
++    l.bar = {l.count.left, l.count.bottom + unit / 2, l.count.right, l.count.bottom + unit / 2 + unit};
++    l.bottom = {l.bar.left, l.bar.bottom + unit / 2, l.bar.right, l.bar.bottom + unit / 2 + unit * 2};
++    l.skip = {l.bottom.right - unit * 8, l.bottom.top, l.bottom.right, l.bottom.bottom};
++    l.dont_show = {l.bottom.left, l.bottom.top, l.skip.left - unit, l.bottom.bottom};
++    return l;
++}
++
++void Paint(HDC dc, const RECT& client, int unit) {
++    Layout l = Arrange(client, unit);
++    FillBox(dc, client, kBackground);
++    SetBkMode(dc, TRANSPARENT);
++    const wchar_t* heading = g_new_driver ? L"The graphics driver changed: preparing the game's shaders again."
++                                          : L"Preparing the game's shaders, so they do not stutter in the game.";
++    DrawLine(dc, l.heading, heading, kText, DT_LEFT);
++    uint32_t done = std::min(g_done.load(), g_total);
++    float fraction = g_total ? float(done) / float(g_total) : 1.0f;
++    std::wstring count = L"Shader " + std::to_wstring(done) + L" of " + std::to_wstring(g_total);
++    DrawLine(dc, l.count, count, kDim, DT_LEFT);
++    DrawLine(dc, l.count, std::to_wstring(int(fraction * 100.0f)) + L"%", kDim, DT_RIGHT);
++    FillBox(dc, l.bar, kBarEmpty);
++    RECT filled = l.bar;
++    filled.right = l.bar.left + LONG(float(l.bar.right - l.bar.left) * fraction);
++    FillBox(dc, filled, kBarFull);
++    FillBox(dc, l.skip, kBarEmpty);
++    DrawLine(dc, l.skip, L"Skip (B)", kText, DT_CENTER);
++    int middle = (l.dont_show.top + l.dont_show.bottom) / 2;
++    RECT box{l.dont_show.left, middle - unit / 2, l.dont_show.left + unit, middle + unit / 2};
++    FillBox(dc, box, kBarEmpty);
++    if (g_dont_show) InflateRect(&box, -unit / 4, -unit / 4);
++    if (g_dont_show) FillBox(dc, box, kBarFull);
++    RECT label = l.dont_show;
++    label.left += unit * 3 / 2;
++    DrawLine(dc, label, L"Don't show this again (X)", kText, DT_LEFT);
++}
++
++int Unit(HWND hwnd) { return MulDiv(10, GetDpiForWindow(hwnd), 96); }
++
++// painted off screen, then copied, so the bar does not flicker
++void PaintWindow(HWND hwnd) {
++    PAINTSTRUCT ps;
++    HDC dc = BeginPaint(hwnd, &ps);
++    RECT client;
++    GetClientRect(hwnd, &client);
++    HDC memory = CreateCompatibleDC(dc);
++    HBITMAP bitmap = CreateCompatibleBitmap(dc, client.right, client.bottom);
++    HGDIOBJ old_bitmap = SelectObject(memory, bitmap);
++    HGDIOBJ old_font = SelectObject(memory, reinterpret_cast<HFONT>(GetWindowLongPtrW(hwnd, GWLP_USERDATA)));
++    Paint(memory, client, Unit(hwnd));
++    BitBlt(dc, 0, 0, client.right, client.bottom, memory, 0, 0, SRCCOPY);
++    SelectObject(memory, old_font);
++    SelectObject(memory, old_bitmap);
++    DeleteObject(bitmap);
++    DeleteDC(memory);
++    EndPaint(hwnd, &ps);
++}
++
++void Skip() {
++    if (!g_skipped.exchange(true)) LOGR("Shaders: pre-compile skipped at %u of %u", g_done.load(), g_total);
++}
++
++void OnClick(HWND hwnd, LPARAM lp) {
++    RECT client;
++    GetClientRect(hwnd, &client);
++    Layout l = Arrange(client, Unit(hwnd));
++    POINT at{short(LOWORD(lp)), short(HIWORD(lp))};
++    if (PtInRect(&l.skip, at)) Skip();
++    else if (PtInRect(&l.dont_show, at)) g_dont_show = !g_dont_show;
++}
++
++// a controller's B skips and X ticks the box; on the press, not the hold
++void PollController() {
++    static uint16_t held = 0;
++    uint16_t now = input::HeldOnAnyController();
++    uint16_t pressed = now & ~held;
++    held = now;
++    if (pressed & XINPUT_GAMEPAD_X) g_dont_show = !g_dont_show;
++    if (pressed & XINPUT_GAMEPAD_B) Skip();
++}
++
++// above the splash, which is up while the game boots
++void ShowOnTop(HWND hwnd) {
++    SetWindowPos(hwnd, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW);
++    SetForegroundWindow(hwnd);
++}
++
++LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
++    switch (msg) {
++        case WM_PAINT:
++            PaintWindow(hwnd);
++            return 0;
++        case WM_ERASEBKGND:
++            return 1;
++        case WM_TIMER:
++            if (!IsWindowVisible(hwnd) && NowMs() - g_opened >= kShowAfterMs) ShowOnTop(hwnd);
++            if (IsWindowVisible(hwnd)) PollController();
++            InvalidateRect(hwnd, nullptr, FALSE);
++            return 0;
++        case WM_LBUTTONUP:
++            OnClick(hwnd, lp);
++            InvalidateRect(hwnd, nullptr, FALSE);
++            return 0;
++        case WM_KEYDOWN:
++            if (wp == VK_SPACE) g_dont_show = !g_dont_show;
++            if (wp == VK_ESCAPE) Skip();
++            InvalidateRect(hwnd, nullptr, FALSE);
++            return 0;
++        case WM_CLOSE:  // the close button skips
++            Skip();
++            return 0;
++        case kCloseWindow:
++            DeleteObject(reinterpret_cast<HFONT>(GetWindowLongPtrW(hwnd, GWLP_USERDATA)));
++            DestroyWindow(hwnd);
++            return 0;
++        case WM_DESTROY:
++            PostQuitMessage(0);
++            return 0;
++    }
++    return DefWindowProcW(hwnd, msg, wp, lp);
++}
++
++// centred on the primary monitor, sized for its DPI, in the message font; hidden until kShowAfterMs
++HWND CreatePrecompileWindow() {
++    HINSTANCE inst = GetModuleHandleW(nullptr);
++    WNDCLASSEXW wc{sizeof(wc)};
++    wc.lpfnWndProc = WndProc;
++    wc.hInstance = inst;
++    wc.hIcon = LoadIconW(inst, MAKEINTRESOURCEW(1));
++    wc.hCursor = LoadCursorW(nullptr, MAKEINTRESOURCEW(32512));  // IDC_ARROW
++    std::wstring class_name = std::wstring(kGame.name) + L"Shaders";
++    wc.lpszClassName = class_name.c_str();
++    RegisterClassExW(&wc);
++    UINT dpi = GetDpiForSystem();
++    DWORD style = WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU;
++    RECT r{0, 0, MulDiv(520, dpi, 96), MulDiv(130, dpi, 96)};
++    AdjustWindowRectExForDpi(&r, style, FALSE, 0, dpi);
++    int w = r.right - r.left;
++    int h = r.bottom - r.top;
++    int x = (GetSystemMetrics(SM_CXSCREEN) - w) / 2;
++    int y = (GetSystemMetrics(SM_CYSCREEN) - h) / 2;
++    HWND hwnd = CreateWindowExW(0, wc.lpszClassName, kGame.title, style, x, y, w, h, nullptr, nullptr, inst, nullptr);
++    NONCLIENTMETRICSW metrics{sizeof(metrics)};
++    SystemParametersInfoForDpi(SPI_GETNONCLIENTMETRICS, sizeof(metrics), &metrics, 0, dpi);
++    SetWindowLongPtrW(hwnd, GWLP_USERDATA, LONG_PTR(CreateFontIndirectW(&metrics.lfMessageFont)));
++    SetTimer(hwnd, 1, 50, nullptr);  // shows it once due, reads the controller, repaints the count
++    return hwnd;
++}
++
++}  // namespace
++
++void OpenPrecompileWindow(uint32_t total, bool new_driver) {
++    g_done = 0;
++    g_total = total;
++    g_new_driver = new_driver;
++    g_skipped = false;
++    g_dont_show = false;
++    g_opened = NowMs();
++    HANDLE created = CreateEventW(nullptr, TRUE, FALSE, nullptr);
++    g_thread = std::thread([created] {
++        g_window = CreatePrecompileWindow();
++        SetEvent(created);
++        MSG msg;
++        while (GetMessageW(&msg, nullptr, 0, 0) > 0) {
++            TranslateMessage(&msg);
++            DispatchMessageW(&msg);
++        }
++    });
++    WaitForSingleObject(created, INFINITE);
++    CloseHandle(created);
++}
++
++void PrecompileStep() { g_done++; }
++
++bool PrecompileSkipped() { return g_skipped; }
++
++void ClosePrecompileWindow() {
++    if (!g_thread.joinable()) return;
++    PostMessageW(g_window, kCloseWindow, 0, 0);
++    g_thread.join();
++    g_window = nullptr;
++    // ticked: later launches leave the shaders to the game, until the PC settings menu turns this on again
++    if (g_dont_show && Get().precompile_shaders) {
++        Get().precompile_shaders = false;
++        Save();
++        LOGR("Shaders: pre-compile turned off (don't show again)");
++    }
++}
++
++}  // namespace app
 diff --git a/runtime/app/settings.cpp b/runtime/app/settings.cpp
-index 4b494d0..043d254 100644
+index 4b494d0..3ae3c14 100644
 --- a/runtime/app/settings.cpp
 +++ b/runtime/app/settings.cpp
 @@ -15,6 +15,7 @@
@@ -1048,9 +1336,11 @@ index 4b494d0..043d254 100644
  #include "core/log.h"
  
  namespace app {
-@@ -50,6 +51,14 @@ void Load() {
+@@ -49,7 +50,16 @@ void Load() {
+     s.fps_cap = t["fps_cap"].value_or(s.fps_cap);
      s.vsync = t["vsync"].value_or(s.vsync);
      s.aniso = t["anisotropic_filtering"].value_or(s.aniso);
++    s.precompile_shaders = t["precompile_shaders"].value_or(s.precompile_shaders);
      s.join_ip = t["join_ip"].value_or(s.join_ip);
 +    s.keyboard = t["keyboard"].value_or(s.keyboard);
 +    s.mouse_look = t["mouse_look"].value_or(s.mouse_look);
@@ -1063,11 +1353,12 @@ index 4b494d0..043d254 100644
      for (const Option& o : kGame.options) {
          if (o.flag) *o.flag = t[o.key].value_or(*o.flag);
          else *o.value = t[o.key].value_or(*o.value);
-@@ -68,7 +77,13 @@ toml::table Table() {
+@@ -68,7 +78,14 @@ toml::table Table() {
                    {"fps_cap", int64_t(s.fps_cap)},
                    {"vsync", s.vsync},
                    {"anisotropic_filtering", int64_t(s.aniso)},
 -                  {"join_ip", s.join_ip}};
++                  {"precompile_shaders", s.precompile_shaders},
 +                  {"join_ip", s.join_ip},
 +                  {"keyboard", s.keyboard},
 +                  {"mouse_look", s.mouse_look},
@@ -1751,10 +2042,10 @@ index 14a066a..7d63489 100644
 +
  }  // namespace gpu
 diff --git a/runtime/gpu/d3d12.cpp b/runtime/gpu/d3d12.cpp
-index c410f12..2656c6e 100644
+index c410f12..427391f 100644
 --- a/runtime/gpu/d3d12.cpp
 +++ b/runtime/gpu/d3d12.cpp
-@@ -13,16 +13,19 @@
+@@ -13,16 +13,20 @@
  #include <wrl/client.h>
  
  #include <algorithm>
@@ -1768,13 +2059,14 @@ index c410f12..2656c6e 100644
 +#include <fstream>
  #include <mutex>
  #include <optional>
++#include <thread>
  #include <unordered_map>
  #include <unordered_set>
 +#include <vector>
  
  #include <imgui.h>
  #include <backends/imgui_impl_dx12.h>
-@@ -70,6 +73,8 @@ struct Perf {
+@@ -70,6 +74,8 @@ struct Perf {
      double sig = 0;
      double texup = 0;
      double compile = 0;
@@ -1783,7 +2075,44 @@ index c410f12..2656c6e 100644
      double clear = 0;
      double copy = 0;
      double present = 0;
-@@ -663,6 +668,8 @@ private:
+@@ -510,7 +516,18 @@ private:
+     void KeyDepthStencil(const State& s, const Assembled& a, PsoKey& k);
+     ID3D12PipelineState* EnsurePipeline(const PsoKey& k, ID3DBlob* vs, ID3DBlob* ps);
+     void FillPipelineDesc(const PsoKey& k, ID3DBlob* vs, ID3DBlob* ps, D3D12_GRAPHICS_PIPELINE_STATE_DESC& d) const;
+-    void ExpandPoints(D3D12_GRAPHICS_PIPELINE_STATE_DESC& d);
++    ID3DBlob* PointShader();  // the geometry shader points are drawn with
++    void PipelineDesc(const PsoKey& k, ID3DBlob* vs, ID3DBlob* ps, ID3DBlob* gs, D3D12_INPUT_ELEMENT_DESC el[16],
++                      D3D12_GRAPHICS_PIPELINE_STATE_DESC& d) const;
++    ComPtr<ID3D12PipelineState> MakePipeline(uint64_t h, const D3D12_GRAPHICS_PIPELINE_STATE_DESC& d);
++    void ListPipeline(uint64_t h, const PsoKey& k);
++    // pipelines kept between runs: OpenPipelineCache, at Init, then its steps in call order
++    void OpenPipelineCache();
++    void FindDriver();
++    std::vector<PsoKey> OpenPipelineList(const std::filesystem::path& file);
++    bool OpenPipelineLibrary(const std::filesystem::path& dir);
++    void Precompile(const std::vector<PsoKey>& keys, bool new_driver);
++    void SavePipelineLibrary();
+     float TargetScale() const;  // host pixels per console pixel of the bound target
+     float RenderTargetShift(const State& s, const DrawShaders& sh) const;
+     void UploadConstants(const State& s, const DrawShaders& sh, const PsoKey& k, const DrawTextures& stages,
+@@ -657,12 +674,25 @@ private:
+     std::unordered_map<uint64_t, ComPtr<ID3DBlob>> blobs_;
+     std::unordered_map<uint64_t, uint64_t> shader_src_;  // vertex and pixel program keys to source hash
+     std::unordered_map<uint64_t, ComPtr<ID3D12PipelineState>> psos_;
++    // pipelines kept between runs (OpenPipelineCache)
++    std::wstring driver_;                    // GPU and driver version, vendor-device-version
++    FILE* pso_list_ = nullptr;               // the key list, open to append
++    std::unordered_set<uint64_t> listed_;    // key hashes on it
++    ComPtr<ID3D12PipelineLibrary> pso_lib_;  // this driver's; null where the device has none
++    std::vector<char> pso_lib_blob_;         // what pso_lib_ was made from, which must outlive it
++    std::filesystem::path pso_lib_file_;
++    std::mutex pso_lib_lock_;
++    std::atomic<bool> pso_lib_dirty_{false};   // stored pipelines since the last save
++    std::atomic<bool> pso_lib_saving_{false};  // a save's thread is writing
++    std::chrono::steady_clock::time_point pso_lib_saved_ = std::chrono::steady_clock::now();
+     std::unordered_map<uint64_t, uint32_t> samplers_;
+     uint32_t smp_used_ = 0;
+     std::unordered_map<uint64_t, Target> targets_;
      std::unordered_map<uint32_t, uint64_t> target_used_;  // target address to the frame it was last used
      std::unordered_map<uint64_t, Tex> textures_;  // by data address, a P8 texture's with its palette's above
      std::unordered_map<uint64_t, ComPtr<ID3D12PipelineState>> blit_psos_;
@@ -1792,7 +2121,7 @@ index c410f12..2656c6e 100644
      Extension* ext_ = nullptr;
      // one frame capture: every draw in a text file, each target as the frame leaves it, the textures it read
      FILE* cap_ = nullptr;
-@@ -728,6 +735,8 @@ private:
+@@ -728,6 +758,8 @@ private:
      std::deque<Report> reports_;
      bool tearing_ = false;
      uint64_t presents_ = 0;
@@ -1801,7 +2130,15 @@ index c410f12..2656c6e 100644
      double fps_ = 0;
      std::chrono::steady_clock::time_point fps_t_ = std::chrono::steady_clock::now();
      uint64_t fps_n_ = 0;
-@@ -1324,16 +1333,80 @@ void D3D12Backend::Blit(ID3D12Resource* src, DXGI_FORMAT fmt, const float uvrect
+@@ -747,6 +779,7 @@ bool D3D12Backend::Init(uint32_t width, uint32_t height) {
+     ImGui_ImplDX12_Init(dev_.Get(), kFrames, DXGI_FORMAT_B8G8R8A8_UNORM, ui_heap_.Get(),
+                         ui_heap_->GetCPUDescriptorHandleForHeapStart(), ui_heap_->GetGPUDescriptorHandleForHeapStart());
+     LoadSettings();
++    OpenPipelineCache();
+     Begin();
+     LOGI("d3d12: %ux%u guest, %ux%u window, render scale %.3f", width, height, bb_w_, bb_h_, scale_);
+     return true;
+@@ -1324,16 +1357,118 @@ void D3D12Backend::Blit(ID3D12Resource* src, DXGI_FORMAT fmt, const float uvrect
      DrawFullScreen(EnsureBlitPipeline(o.rtv, o.over), cb.gpu, slot, si);
  }
  
@@ -1843,21 +2180,59 @@ index c410f12..2656c6e 100644
 +    return true;
 +}
 +
-+void StoreShaderCache(const std::filesystem::path& file, ID3DBlob* code) {
++// written beside the file (named for this process, as a second instance may write too), then moved over it
++void WriteWhole(const std::filesystem::path& file, const void* data, size_t size) {
 +    std::error_code ec;
 +    std::filesystem::create_directories(file.parent_path(), ec);
 +    if (ec) return;
 +    std::filesystem::path tmp = file;
-+    tmp += ".tmp";
++    tmp += "." + std::to_string(GetCurrentProcessId()) + ".tmp";
 +    {
 +        std::ofstream out(tmp, std::ios::binary | std::ios::trunc);
 +        if (!out) return;
-+        out.write(static_cast<const char*>(code->GetBufferPointer()), (std::streamsize)code->GetBufferSize());
++        out.write(static_cast<const char*>(data), (std::streamsize)size);
 +        out.close();
 +        // rename only a complete write, so a crash never leaves half a file
 +        if (!out) return;
 +    }
 +    std::filesystem::rename(tmp, file, ec);
++    if (ec) std::filesystem::remove(tmp, ec);
++}
++
++void StoreShaderCache(const std::filesystem::path& file, ID3DBlob* code) {
++    WriteWhole(file, code->GetBufferPointer(), code->GetBufferSize());
++}
++
++// pipelines kept between runs (D3D12Backend::OpenPipelineCache): the list of every pipeline key a draw needed, for
++// any driver, then a header-checked PsoKey after another; and this driver's compiled pipelines, a pipeline library
++// named for the GPU and driver version, so a new driver finds none and compiles the list again
++constexpr char kPipelineList[] = "pipelines.bin";
++constexpr uint32_t kPipelineListMagic = 0x314F5350;  // 'PSO1'
++constexpr double kPipelineSaveSeconds = 30;          // the library is written at most this often while it grows
++struct PipelineListHeader {
++    uint32_t magic;
++    uint32_t key_size;  // sizeof(PsoKey): a changed key drops the list
++    uint64_t version;   // kShaderCacheVersion's hash, as the shader file names are seeded with it
++};
++
++PipelineListHeader ListHeader() {
++    return {kPipelineListMagic, uint32_t(sizeof(PsoKey)), Hash(kShaderCacheVersion, std::strlen(kShaderCacheVersion))};
++}
++
++bool ReadWhole(const std::filesystem::path& file, std::vector<char>& out) {
++    std::ifstream in(file, std::ios::binary);
++    if (!in) return false;
++    out.assign(std::istreambuf_iterator<char>(in), {});
++    return true;
++}
++
++// a point is drawn as its whole console pixel by a geometry shader, solid, front facing and never culled
++void ExpandPoints(D3D12_GRAPHICS_PIPELINE_STATE_DESC& d, ID3DBlob* gs) {
++    if (!gs) return;
++    d.GS = {gs->GetBufferPointer(), gs->GetBufferSize()};
++    d.RasterizerState.FillMode = D3D12_FILL_MODE_SOLID;
++    d.RasterizerState.CullMode = D3D12_CULL_MODE_NONE;
++    d.RasterizerState.FrontCounterClockwise = FALSE;
 +}
 +
  ID3DBlob* D3D12Backend::Compile(const std::string& src, const char* entry, const char* profile, uint64_t& hash) {
@@ -1884,7 +2259,7 @@ index c410f12..2656c6e 100644
      g_perf.shaders++;
      HRESULT hr = D3DCompile(src.data(), src.size(), nullptr, nullptr, nullptr, entry, profile,
                              D3DCOMPILE_OPTIMIZATION_LEVEL1, 0, &code, &err);
-@@ -1341,8 +1414,9 @@ ID3DBlob* D3D12Backend::Compile(const std::string& src, const char* entry, const
+@@ -1341,8 +1476,9 @@ ID3DBlob* D3D12Backend::Compile(const std::string& src, const char* entry, const
          LOGE("d3d12: %s compile failed: %s", profile, err ? static_cast<const char*>(err->GetBufferPointer()) : "?");
          LOGE("%s", src.c_str());
          blobs_[hash] = nullptr;
@@ -1895,7 +2270,7 @@ index c410f12..2656c6e 100644
      blobs_[hash] = code;
      return code.Get();
  }
-@@ -1366,6 +1440,18 @@ D3D12_GRAPHICS_PIPELINE_STATE_DESC D3D12Backend::FullScreenPipelineDesc(ID3DBlob
+@@ -1366,6 +1502,18 @@ D3D12_GRAPHICS_PIPELINE_STATE_DESC D3D12Backend::FullScreenPipelineDesc(ID3DBlob
      return d;
  }
  
@@ -1914,16 +2289,229 @@ index c410f12..2656c6e 100644
  ID3D12PipelineState* D3D12Backend::EnsureBlitPipeline(DXGI_FORMAT rtv, bool over) {
      auto& pso = blit_psos_[uint64_t(rtv) | uint64_t(over) << 32];
      if (pso) return pso.Get();
-@@ -1555,6 +1641,8 @@ ID3D12PipelineState* D3D12Backend::EnsurePipeline(const PsoKey& k, ID3DBlob* vs,
-     if (k.topo == uint32_t(Topology::Points)) ExpandPoints(d);
-     ComPtr<ID3D12PipelineState> pso;
+@@ -1519,15 +1667,191 @@ void D3D12Backend::FillPipelineDesc(const PsoKey& k, ID3DBlob* vs, ID3DBlob* ps,
+     d.SampleDesc.Count = 1;
+ }
+ 
+-// a point is drawn as its whole console pixel by a geometry shader, solid, front facing and never culled
+-void D3D12Backend::ExpandPoints(D3D12_GRAPHICS_PIPELINE_STATE_DESC& d) {
++ID3DBlob* D3D12Backend::PointShader() {
+     uint64_t hash;
+-    ID3DBlob* gs = Compile(PointHlsl(), "main", "gs_5_0", hash);
+-    if (!gs) return;
+-    d.GS = {gs->GetBufferPointer(), gs->GetBufferSize()};
+-    d.RasterizerState.FillMode = D3D12_FILL_MODE_SOLID;
+-    d.RasterizerState.CullMode = D3D12_CULL_MODE_NONE;
+-    d.RasterizerState.FrontCounterClockwise = FALSE;
++    return Compile(PointHlsl(), "main", "gs_5_0", hash);
++}
++
++// the whole pipeline; el holds its input layout. Any thread
++void D3D12Backend::PipelineDesc(const PsoKey& k, ID3DBlob* vs, ID3DBlob* ps, ID3DBlob* gs,
++                                D3D12_INPUT_ELEMENT_DESC el[16], D3D12_GRAPHICS_PIPELINE_STATE_DESC& d) const {
++    d = {};
++    d.InputLayout = {el, FillInputLayout(k, el)};
++    FillPipelineDesc(k, vs, ps, d);
++    if (k.topo == uint32_t(Topology::Points)) ExpandPoints(d, gs);
++}
++
++// this driver's library has it, else it is compiled and stored there; null when it can't be made. Any thread, one
++// call per key at a time
++ComPtr<ID3D12PipelineState> D3D12Backend::MakePipeline(uint64_t h, const D3D12_GRAPHICS_PIPELINE_STATE_DESC& d) {
++    ComPtr<ID3D12PipelineState> pso;
++    wchar_t name[20];
++    swprintf(name, 20, L"%016llx", (unsigned long long)h);
++    if (pso_lib_ && SUCCEEDED(pso_lib_->LoadGraphicsPipeline(name, &d, IID_PPV_ARGS(&pso)))) return pso;
++    if (FAILED(dev_->CreateGraphicsPipelineState(&d, IID_PPV_ARGS(&pso)))) return nullptr;
++    if (pso_lib_) {
++        std::lock_guard lock(pso_lib_lock_);
++        if (SUCCEEDED(pso_lib_->StorePipeline(name, pso.Get()))) pso_lib_dirty_ = true;
++    }
++    return pso;
++}
++
++// the driver's GPU and version, as the library's file name has them
++void D3D12Backend::FindDriver() {
++    ComPtr<IDXGIAdapter1> adapter;
++    DXGI_ADAPTER_DESC1 ad{};
++    LARGE_INTEGER umd{};
++    if (FAILED(factory_->EnumAdapterByLuid(dev_->GetAdapterLuid(), IID_PPV_ARGS(&adapter))) ||
++        FAILED(adapter->GetDesc1(&ad)) || FAILED(adapter->CheckInterfaceSupport(__uuidof(IDXGIDevice), &umd))) {
++        driver_ = L"unknown";
++        return;
++    }
++    wchar_t id[64];
++    swprintf(id, 64, L"%04x-%04x-%u.%u.%u.%u", ad.VendorId, ad.DeviceId, HIWORD(umd.HighPart), LOWORD(umd.HighPart),
++             HIWORD(umd.LowPart), LOWORD(umd.LowPart));
++    driver_ = id;
++}
++
++// the keys of earlier runs, each once, into listed_; then the list is open to append to
++std::vector<PsoKey> D3D12Backend::OpenPipelineList(const std::filesystem::path& file) {
++    std::vector<PsoKey> keys;
++    std::vector<char> bytes;
++    PipelineListHeader want = ListHeader(), have{};
++    bool valid = ReadWhole(file, bytes) && bytes.size() >= sizeof(have);
++    if (valid) std::memcpy(&have, bytes.data(), sizeof(have));
++    valid = valid && std::memcmp(&have, &want, sizeof(have)) == 0;
++    for (size_t at = sizeof(have); valid && at + sizeof(PsoKey) <= bytes.size(); at += sizeof(PsoKey)) {
++        PsoKey k;
++        std::memcpy(&k, bytes.data() + at, sizeof(k));
++        if (listed_.insert(Hash(&k, sizeof(k))).second) keys.push_back(k);
++    }
++    // a list cut short mid-key, as a crash may leave it, keeps its whole keys
++    if (valid && (bytes.size() - sizeof(have)) % sizeof(PsoKey) == 0) {
++        pso_list_ = _wfopen(file.c_str(), L"ab");
++    } else {
++        std::error_code ec;
++        std::filesystem::create_directories(file.parent_path(), ec);
++        if ((pso_list_ = _wfopen(file.c_str(), L"wb"))) {
++            std::fwrite(&want, sizeof(want), 1, pso_list_);
++            for (const PsoKey& k : keys) std::fwrite(&k, sizeof(k), 1, pso_list_);
++            std::fflush(pso_list_);
++        }
++    }
++    return keys;
++}
++
++// this driver's library from an earlier run, else an empty one; true when the pipelines were ready for another driver
++bool D3D12Backend::OpenPipelineLibrary(const std::filesystem::path& dir) {
++    ComPtr<ID3D12Device1> dev1;
++    if (FAILED(dev_.As(&dev1))) {
++        LOGI("d3d12: no pipeline libraries, pipelines are compiled each run");
++        return false;
++    }
++    pso_lib_file_ = dir / (L"pipelines-" + driver_ + L".lib");
++    bool other = false;
++    std::error_code ec;
++    for (auto& e : std::filesystem::directory_iterator(dir, ec)) {
++        std::wstring name = e.path().filename().wstring();
++        if (name.starts_with(L"pipelines-") && e.path().extension() == L".lib" && e.path() != pso_lib_file_) {
++            other = true;  // another driver's: of no use to this one
++            std::filesystem::remove(e.path(), ec);
++        }
++    }
++    if (ReadWhole(pso_lib_file_, pso_lib_blob_) && !pso_lib_blob_.empty()) {
++        HRESULT hr = dev1->CreatePipelineLibrary(pso_lib_blob_.data(), pso_lib_blob_.size(), IID_PPV_ARGS(&pso_lib_));
++        if (SUCCEEDED(hr)) return other;
++        // the driver's own check: D3D12_ERROR_DRIVER_VERSION_MISMATCH or D3D12_ERROR_ADAPTER_NOT_FOUND
++        LOGR("Shaders: the saved pipelines do not suit this driver (%08lX), compiling them again", (unsigned long)hr);
++        other = true;
++    }
++    pso_lib_blob_.clear();
++    if (FAILED(dev1->CreatePipelineLibrary(nullptr, 0, IID_PPV_ARGS(&pso_lib_)))) {
++        pso_lib_ = nullptr;
++        LOGI("d3d12: no pipeline library, pipelines are compiled each run");
++    }
++    return other;
++}
++
++// Init: the pipelines earlier runs used, ready before the game draws (Precompile) unless the player turned it off
++void D3D12Backend::OpenPipelineCache() {
++    std::filesystem::path dir = app::ExeDir() / kShaderCacheDir;
++    FindDriver();
++    std::vector<PsoKey> keys = OpenPipelineList(dir / kPipelineList);
++    bool new_driver = OpenPipelineLibrary(dir);
++    LOGR("Shaders: %zu pipelines from earlier runs, driver %ls%s", keys.size(), driver_.c_str(),
++         new_driver ? " (changed)" : "");
++    if (!keys.empty() && app::Get().precompile_shaders) Precompile(keys, new_driver);
++}
++
++// every listed pipeline loaded from the library or compiled, on worker threads, behind the pre-compile window (which
++// shows itself only when this takes a moment); skipped, the rest are made as the game draws them
++void D3D12Backend::Precompile(const std::vector<PsoKey>& keys, bool new_driver) {
++    auto start = PerfClock::now();
++    app::OpenPrecompileWindow(uint32_t(keys.size()), new_driver);
++    std::filesystem::path dir = app::ExeDir() / kShaderCacheDir;
++    // the shaders from the disk cache on this thread, as blobs_ is the renderer's; a missing one leaves its pipelines
++    // to the game, which compiles the shader again
++    auto blob = [&](uint64_t h) -> ID3DBlob* {
++        if (auto it = blobs_.find(h); it != blobs_.end()) return it->second.Get();
++        ComPtr<ID3DBlob> code;
++        if (!LoadShaderCache(dir / ShaderCacheName(h), &code)) return nullptr;
++        return (blobs_[h] = code).Get();
++    };
++    std::vector<std::pair<ID3DBlob*, ID3DBlob*>> code(keys.size());
++    for (size_t i = 0; i < keys.size(); i++) code[i] = {blob(keys[i].vs), blob(keys[i].ps)};
++    ID3DBlob* gs = PointShader();
++    std::vector<ComPtr<ID3D12PipelineState>> made(keys.size());
++    std::atomic<size_t> next{0};
++    auto work = [&] {
++        for (size_t i; (i = next++) < keys.size() && !app::PrecompileSkipped();) {
++            if (code[i].first && code[i].second) {
++                D3D12_INPUT_ELEMENT_DESC el[16];
++                D3D12_GRAPHICS_PIPELINE_STATE_DESC d;
++                PipelineDesc(keys[i], code[i].first, code[i].second, gs, el, d);
++                made[i] = MakePipeline(Hash(&keys[i], sizeof(PsoKey)), d);
++            }
++            app::PrecompileStep();
++        }
++    };
++    // one thread a core but one, which the window and the system keep
++    unsigned threads = std::clamp(std::thread::hardware_concurrency(), 2u, 17u) - 1;
++    std::vector<std::thread> workers;
++    for (unsigned i = 0; i < threads; i++) workers.emplace_back(work);
++    for (std::thread& t : workers) t.join();
++    app::ClosePrecompileWindow();
++    size_t ready = 0;
++    for (size_t i = 0; i < keys.size(); i++)
++        if (made[i]) {
++            psos_[Hash(&keys[i], sizeof(PsoKey))] = made[i];
++            ready++;
++        }
++    LOGR("Shaders: %zu of %zu pipelines ready at launch, %.0f ms on %u threads%s", ready, keys.size(),
++         PerfMs(start), threads, app::PrecompileSkipped() ? " (skipped)" : "");
++    SavePipelineLibrary();
++}
++
++// the library to disk when it has gained pipelines, written on a thread of its own; one write at a time
++void D3D12Backend::SavePipelineLibrary() {
++    if (!pso_lib_ || pso_lib_saving_ || !pso_lib_dirty_.exchange(false)) return;
++    pso_lib_saved_ = PerfClock::now();
++    std::vector<char> data;
++    {
++        std::lock_guard lock(pso_lib_lock_);
++        data.resize(pso_lib_->GetSerializedSize());
++        if (data.empty() || FAILED(pso_lib_->Serialize(data.data(), data.size()))) return;
++    }
++    pso_lib_saving_ = true;
++    std::thread([this, data = std::move(data), file = pso_lib_file_] {
++        WriteWhole(file, data.data(), data.size());
++        pso_lib_saving_ = false;
++    }).detach();
++}
++
++// a new key goes on the list, for the next run's pre-compile
++void D3D12Backend::ListPipeline(uint64_t h, const PsoKey& k) {
++    if (!pso_list_ || !listed_.insert(h).second) return;
++    std::fwrite(&k, sizeof(k), 1, pso_list_);
++    std::fflush(pso_list_);
+ }
+ 
+ float D3D12Backend::TargetScale() const {
+@@ -1548,14 +1872,14 @@ ID3D12PipelineState* D3D12Backend::EnsurePipeline(const PsoKey& k, ID3DBlob* vs,
+     auto it = psos_.find(h);
+     if (it != psos_.end()) return it->second.Get();
+     D3D12_INPUT_ELEMENT_DESC el[16];
+-    uint32_t n = FillInputLayout(k, el);
+-    D3D12_GRAPHICS_PIPELINE_STATE_DESC d{};
+-    d.InputLayout = {el, n};
+-    FillPipelineDesc(k, vs, ps, d);
+-    if (k.topo == uint32_t(Topology::Points)) ExpandPoints(d);
+-    ComPtr<ID3D12PipelineState> pso;
++    D3D12_GRAPHICS_PIPELINE_STATE_DESC d;
++    PipelineDesc(k, vs, ps, k.topo == uint32_t(Topology::Points) ? PointShader() : nullptr, el, d);
      g_perf.psos++;
+-    if (FAILED(dev_->CreateGraphicsPipelineState(&d, IID_PPV_ARGS(&pso)))) LOGE("d3d12: pipeline creation failed");
 +    PerfScope perf_pso{g_perf.compile};  // the driver compiles here too
 +    PerfScope perf_psom{g_perf.pso_ms};
-     if (FAILED(dev_->CreateGraphicsPipelineState(&d, IID_PPV_ARGS(&pso)))) LOGE("d3d12: pipeline creation failed");
++    ComPtr<ID3D12PipelineState> pso = MakePipeline(h, d);
++    if (pso) ListPipeline(h, k);
++    else LOGE("d3d12: pipeline creation failed");
      psos_[h] = pso;
      return pso.Get();
-@@ -1593,6 +1681,8 @@ ID3D12Resource* D3D12Backend::BindTargetTexture(const State& s, int stage, const
+ }
+@@ -1593,6 +1917,8 @@ ID3D12Resource* D3D12Backend::BindTargetTexture(const State& s, int stage, const
      sv.Format = t.depth ? DXGI_FORMAT_R24_UNORM_X8_TYPELESS : t.fmt;
      // the console reads the pixels it is about to overwrite: give the draw a copy
      if (feedback) return Feedback(t);
@@ -1932,7 +2520,7 @@ index c410f12..2656c6e 100644
      Transition(t.res.Get(), t.state, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
      if (t.depth) info.shadow = ShadowDepthKind(d.format);
      info.kind = kTex2D;
-@@ -1812,7 +1902,9 @@ D3D12_SAMPLER_DESC StageSampler(const State& s, int i, const DrawTextures& stage
+@@ -1812,7 +2138,9 @@ D3D12_SAMPLER_DESC StageSampler(const State& s, int i, const DrawTextures& stage
          sd.Filter = D3D12_FILTER_ANISOTROPIC;
          sd.MaxAnisotropy = std::min<uint32_t>(an, 16);
      }
@@ -1943,7 +2531,7 @@ index c410f12..2656c6e 100644
      sd.AddressU = Address(clamp && t[kTssAddressU] == kTaddressWrap ? kTaddressClamp : t[kTssAddressU]);
      sd.AddressV = Address(clamp && t[kTssAddressV] == kTaddressWrap ? kTaddressClamp : t[kTssAddressV]);
      sd.AddressW = Address(t[kTssAddressW]);
-@@ -2040,8 +2132,11 @@ void FillCombinerConstants(const State& s, DrawConstants& c) {
+@@ -2040,8 +2368,11 @@ void FillCombinerConstants(const State& s, DrawConstants& c) {
  constexpr float kGlowBoxTexels = 3.0f;  // console texels across the box each wide tap averages
  
  void D3D12Backend::FillTexelConstants(int i, const TextureDesc& d, const DrawTextures& stages, DrawConstants& c) {
@@ -1957,7 +2545,7 @@ index c410f12..2656c6e 100644
      if (!stages.rt[i]) return;
      float k = stages.k[i];
      // a 3 console texel box per tap keeps the console chain's glow width and brightness
-@@ -2251,6 +2346,11 @@ void D3D12Backend::CaptureDraw(const State& s, uint32_t prim, uint32_t count, co
+@@ -2251,6 +2582,11 @@ void D3D12Backend::CaptureDraw(const State& s, uint32_t prim, uint32_t count, co
              cap_i_++, s.rt.data, bound_ds_ ? s.zs.data : 0, prim, count, s.vs_handle, s.ps ? s.ps->handle : 0, k.blend,
              k.src, k.dst, k.zen, k.zfunc, k.zwrite, k.zbias, k.zslope, k.cull, k.wmask, c.pc[0][0], c.pc[0][1],
              c.pc[0][2], c.pc[0][3]);
@@ -1969,7 +2557,7 @@ index c410f12..2656c6e 100644
      CaptureTextures(s, stages);
  }
  
-@@ -2321,7 +2421,10 @@ void D3D12Backend::SetTextureViewsAndSamplers(const State& s, const Assembled& a
+@@ -2321,7 +2657,10 @@ void D3D12Backend::SetTextureViewsAndSamplers(const State& s, const Assembled& a
          dev_->CreateShaderResourceView(stages.res[i], &sv, Cpu(srv_heap_.Get(), slot + i, srv_inc_));
      }
      cl_->SetGraphicsRootDescriptorTable(2, Gpu(srv_heap_.Get(), slot, srv_inc_));
@@ -1981,7 +2569,7 @@ index c410f12..2656c6e 100644
      cl_->SetGraphicsRootDescriptorTable(3, Gpu(smp_heap_.Get(), samplers, smp_inc_));
  }
  
-@@ -2472,6 +2575,9 @@ void D3D12Backend::DeliverReports() {
+@@ -2472,6 +2811,9 @@ void D3D12Backend::DeliverReports() {
  void D3D12Backend::Draw(const State& s, uint32_t prim, uint32_t start, uint32_t count, const uint8_t* indices) {
      PerfScope perf_draw{g_perf.draw};
      g_perf.draws++;
@@ -1991,7 +2579,7 @@ index c410f12..2656c6e 100644
      if (cap_) CapStep(s.rt);
      if (DepthCopy(s)) return;
      DrawEnd draw_end{ext_};
-@@ -2569,6 +2675,7 @@ void D3D12Backend::ClearTarget(Target& t, const State& s, const ClearArgs& c, st
+@@ -2569,6 +2911,7 @@ void D3D12Backend::ClearTarget(Target& t, const State& s, const ClearArgs& c, st
  void D3D12Backend::Clear(const State& s, uint32_t count, const uint8_t* rects, uint32_t flags, uint32_t color, float z,
                           uint32_t stencil) {
      PerfScope perf_clear{g_perf.clear};
@@ -1999,7 +2587,7 @@ index c410f12..2656c6e 100644
      if (cap_) {
          CapStep(s.rt);
          fprintf(cap_, "%04u clear rt %08X ds %08X flags %X color %08X z %.3f\n", cap_i_++, s.rt.data, s.zs.data, flags,
-@@ -2735,6 +2842,7 @@ void D3D12Backend::CopyByRegion(const Target& src_t, ID3D12Resource* src_res, D3
+@@ -2735,6 +3078,7 @@ void D3D12Backend::CopyByRegion(const Target& src_t, ID3D12Resource* src_res, D3
  void D3D12Backend::Copy(const Surface& src, const Surface& dst, uint32_t count, uint32_t src_rects,
                          uint32_t dst_points) {
      PerfScope perf_copy{g_perf.copy};
@@ -2007,7 +2595,7 @@ index c410f12..2656c6e 100644
      Target* src_t = FindTarget(src, false);
      if (cap_) {
          const char* from = "memory";
-@@ -2928,18 +3036,35 @@ void D3D12Backend::CountFps() {
+@@ -2928,18 +3272,35 @@ void D3D12Backend::CountFps() {
  void LogPerf() {
      static PerfClock::time_point perf_start = PerfClock::now();
      static uint64_t perf_frames = 0;
@@ -2045,7 +2633,7 @@ index c410f12..2656c6e 100644
               "resource %.2f fence %.2f flush %.2f copy %.2f, next frame %.2f) | read-backs waited for: %.1f lock, "
               "%.1f NOOVERWRITE",
               g_perf_capture_ns.exchange(0) / n / 1e6, g_perf_wait_ns.exchange(0) / n / 1e6,
-@@ -2948,7 +3073,7 @@ void LogPerf() {
+@@ -2948,7 +3309,7 @@ void LogPerf() {
               g_perf_wait_kind_ns[3].exchange(0) / n / 1e6, g_perf_wait_kind_ns[4].exchange(0) / n / 1e6,
               g_perf_wait_kind_ns[5].exchange(0) / n / 1e6, g_perf_sync_block.exchange(0) / n,
               g_perf_sync_late.exchange(0) / n);
@@ -2054,7 +2642,7 @@ index c410f12..2656c6e 100644
               "hashed | %.1f tex uploads %.2f MB, %.1f new tex, %.1f new targets, %.1f target uploads, %.1f shrinks, "
               "%.1f read-backs %.1f late | %llu shaders %llu psos this second",
               p.draws / n, p.raw / n, p.verts / n / 1000.0, p.upload / n / 1048576.0, p.overflow / n, p.sigs / n,
-@@ -2956,6 +3081,8 @@ void LogPerf() {
+@@ -2956,6 +3317,8 @@ void LogPerf() {
               p.targets / n, p.rtups / n, p.shrinks / n, p.syncs / n, p.lates / n,
               (unsigned long long)p.shaders, (unsigned long long)p.psos);
          g_perf = Perf{};
@@ -2063,7 +2651,7 @@ index c410f12..2656c6e 100644
          perf_start = PerfClock::now();
          perf_frames = 0;
      }
-@@ -2987,11 +3114,54 @@ void D3D12Backend::Present(const Surface& front) {
+@@ -2987,11 +3350,55 @@ void D3D12Backend::Present(const Surface& front) {
      presents_++;
      presents_seen_.store(presents_);
      frame_++;
@@ -2080,6 +2668,7 @@ index c410f12..2656c6e 100644
 +    }
      ReleaseOldTextures();
      ResetFrame();
++    if (PerfMs(pso_lib_saved_) >= kPipelineSaveSeconds * 1000.0) SavePipelineLibrary();
      CountFps();
      if (diag::Perf()) LogPerf();
      ApplySettings();
@@ -2118,7 +2707,7 @@ index c410f12..2656c6e 100644
  }
  
  void D3D12Backend::ApplySettings() {
-@@ -3300,4 +3470,9 @@ void D3D12Backend::SetGamma(const uint8_t* ramp) {
+@@ -3300,4 +3707,9 @@ void D3D12Backend::SetGamma(const uint8_t* ramp) {
  
  std::unique_ptr<Backend> CreateBackend() { return std::make_unique<D3D12Backend>(); }
  

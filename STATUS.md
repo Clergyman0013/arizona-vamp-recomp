@@ -30,6 +30,7 @@ ultrawide is an optional goodie after the first release.
 
 1. ~~**Shader cache** (task-010)~~ done 2026-10-19 (warm runs; a first run still compiles): disk cache, pipeline library, then
    precompile at start / background compile so even a first run does not hitch.
+   Pre-compile at launch with driver check done 2026-10-20 (see below); the very first run still compiles.
 2. ~~**Bug-report hotkey** (task-012)~~ done 2026-10-19: one key opens an in-game note box;
    Enter saves an F3 capture, the note, the time and the log tail to a
    `reports\` folder. Game input is blocked while typing.
@@ -69,6 +70,22 @@ menu still needed):
 | General | Skip videos with Start / Escape | check (Escape skips the intro now) |
 | General | Pause on focus loss (game + sound) | no |
 | Misc | Custom menu cursor (`cursor.png`) | no |
+
+### Shader pre-compile at launch (2026-10-20)
+
+- Every pipeline key a draw needs goes on `shadercache\pipelines.bin` (any driver). Compiled pipelines go in a
+  D3D12 pipeline library named for the GPU and driver version (`pipelines-<vendor>-<device>-<version>.lib`). At
+  device init every listed pipeline is loaded from the library or compiled on worker threads, behind a progress
+  window (Skip with B / Esc / close, "Don't show this again" with X / Space) that shows only past 300 ms.
+- A new driver finds no library of its name (or the driver rejects the old one): the list compiles again at
+  launch and the old library is deleted. "Don't show this again" sets `precompile_shaders = false`; PC settings,
+  Graphics, "Precompile shaders" turns it back on.
+- Checked 2026-10-20 (dev build): level 1 run made 48 pipelines; next launch 48 of 48 ready in 14 ms; renamed
+  library (fake old driver) logged "(changed)", recompiled in 24 ms (the driver's own cache still warm); a
+  slowed test build showed the window, Space + Esc skipped at 11 of 48 and turned the setting off; the off run
+  skipped the pass. Not checked: a real driver update, the menu checkbox on screen.
+- The very first run still compiles as it goes: shaders come from the game's own data at run time, and the
+  release ships none.
 
 ### Releases build the game code on the player's PC (2026-10-20)
 

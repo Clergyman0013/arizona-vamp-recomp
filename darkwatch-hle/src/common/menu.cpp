@@ -323,6 +323,9 @@ void PageGraphics() {
         s.aniso = kLevels[at];
         s_dirty = true;
     }
+    Row("Precompile shaders");
+    if (ImGui::Checkbox("##precompile", &s.precompile_shaders)) s_dirty = true;
+    Hint("At launch, compile the shaders earlier play used when the graphics driver lacks them (a new driver, a cleared cache), so they do not stutter in the game.");
     ImGui::Spacing();
     Hint("More graphics settings (anti-aliasing, draw distance, ambient occlusion) come later.");
 }
