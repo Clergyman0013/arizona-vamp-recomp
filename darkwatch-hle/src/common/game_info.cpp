@@ -22,6 +22,16 @@ extern bool g_bonus;
 void Read(const std::string& xbox, uint64_t pos, uint8_t* data, uint32_t len);
 }  // namespace content
 
+// src/common/prompts.cpp: PlayStation and Switch pictures in the game's button prompts
+namespace prompts {
+extern uint32_t g_style;
+void Texture(uint32_t data, uint32_t format, uint32_t width, uint32_t height, uint32_t level, uint8_t* bgra, uint32_t pitch);
+}  // namespace prompts
+
+namespace mouse_menus {
+extern bool g_on;  // src/game/mouse_menus.cpp
+}
+
 // what the runtime asks of the game; strings must be set, hooks may stay null
 // Darkwatch's defaults, before the settings file loads over them: 16x anisotropic filtering
 namespace {
@@ -48,7 +58,9 @@ const app::GameInfo app::kGame = {
                 {"reticle_size", nullptr, &menu::g_reticle},
                 {"cutscene_borders", &menu::g_cutscene_borders, nullptr},
                 {"mouse_direct_aim", &menu::g_mouse_direct, nullptr},
-                {"bonus_content", &content::g_bonus, nullptr}},
+                {"bonus_content", &content::g_bonus, nullptr},
+                {"button_prompts", nullptr, &prompts::g_style},
+                {"mouse_menus", &mouse_menus::g_on, nullptr}},
     .load = nullptr,                      // reads more from the settings file's toml::table
     .save = nullptr,                      // writes more into it
     .init = nullptr,                      // after the settings load, before the window and boot
@@ -59,4 +71,5 @@ const app::GameInfo app::kGame = {
     .pad = menu::MenuPad,                 // changes a polled pad
     .rumble = nullptr,                    // changes a rumble before it is set
     .read = content::Read,                // changes what a game file read returns
+    .texture = prompts::Texture,          // changes a decoded texture
 };

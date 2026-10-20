@@ -26,6 +26,10 @@ extern uint32_t g_reticle;     // percent
 extern bool g_cutscene_borders;
 }  // namespace menu
 
+namespace mouse_menus {
+void Playing();  // mouse_menus.cpp: the player's view turned, so no menu has the mouse
+}
+
 namespace {
 
 float F32(uint32_t va) {
@@ -169,6 +173,7 @@ std::atomic<uint64_t> s_aimed{0};
 
 X86_EXTERN_FUNC(__imp__sub_000A2725);
 X86_FUNC(sub_000A2725) {
+    mouse_menus::Playing();
     uint32_t look = ctx.ecx, ch = kernel::R32(look + 0x40);
     if (!Direct() || !ch) {
         __imp__sub_000A2725(ctx, base);

@@ -40,6 +40,18 @@ namespace content {
 extern bool g_bonus;  // content.cpp
 }
 
+namespace prompts {
+extern uint32_t g_style;  // prompts.cpp
+void Frame();
+}  // namespace prompts
+
+namespace mouse_menus {  // src/game/mouse_menus.cpp
+extern bool g_on;
+void Frame();
+void Wheel(int delta);
+void Pad(int port, input::Pad& pad);
+}  // namespace mouse_menus
+
 namespace menu {
 
 bool g_show_fps = false;  // settings file: show_fps
@@ -185,7 +197,8 @@ void ScaleUi() {
 void Open() {
     if (s_open) return;
     s_open = true;
-    s_mouse_was_captured = input::MouseCaptured();
+    // a game menu's pointer lets go of the mouse while this is up, which would look again: free it too
+    s_mouse_was_captured = input::MouseCaptured() || input::Pointer();
     if (s_mouse_was_captured) input::ToggleMouse();
     const app::Settings& s = app::Get();
     s_pending = {s.display_mode, s.width, s.height};
@@ -344,6 +357,17 @@ void PageGraphics() {
         s.aniso = kLevels[at];
         s_dirty = true;
     }
+    Row("Anti-aliasing (MSAA)");
+    const uint32_t kSamples[] = {0, 2, 4, 8};
+    const char* kSampleNames[] = {"Off", "2x", "4x", "8x"};
+    int ms = 0;
+    for (int i = 0; i < 4; i++)
+        if (kSamples[i] == s.msaa) ms = i;
+    if (ImGui::Combo("##msaa", &ms, kSampleNames, 4)) {
+        s.msaa = kSamples[ms];
+        s_dirty = true;
+    }
+    Hint("Smooths the edges of the 3D picture. Costs GPU time, more with a higher render resolution.");
     Row("Precompile shaders");
     if (ImGui::Checkbox("##precompile", &s.precompile_shaders)) s_dirty = true;
     Hint("At launch, compile the shaders earlier play used when the graphics driver lacks them (a new driver, a cleared cache), so they do not stutter in the game.");
@@ -368,7 +392,7 @@ void PageGraphics() {
     if (ImGui::Checkbox("##borders", &g_cutscene_borders)) s_dirty = true;
     Hint("The black bars of the in-level cut-scenes. Movies are not changed.");
     ImGui::Spacing();
-    Hint("More graphics settings (anti-aliasing, draw distance, ambient occlusion) come later.");
+    Hint("More graphics settings (draw distance, ambient occlusion) come later.");
 }
 
 std::string KeysOf(const char* control) {
@@ -422,6 +446,15 @@ void PollBind() {
 
 void PageControls() {
     app::Settings& s = app::Get();
+    Row("Button prompts");
+    const char* kPrompts[] = {"Controller in use", "Xbox", "PlayStation", "Switch"};
+    int style = int(std::min<uint32_t>(prompts::g_style, 3));
+    if (ImGui::Combo("##prompts", &style, kPrompts, 4)) {
+        prompts::g_style = uint32_t(style);
+        s_dirty = true;
+    }
+    Hint("The buttons the game's prompts show. Controller in use: PlayStation or Switch pictures for those pads, Xbox for the rest and for the keyboard.");
+    ImGui::Spacing();
     Row("Keyboard and mouse");
     if (ImGui::Checkbox("##kb", &s.keyboard)) s_dirty = true;
     ImGui::BeginDisabled(!s.keyboard);
@@ -436,6 +469,9 @@ void PageControls() {
     Row("Direct mouse aiming");
     if (ImGui::Checkbox("##direct", &g_mouse_direct)) s_dirty = true;
     Hint("On foot the mouse turns the view by how far it moves, with no stick curve or aim assist. Off: the mouse is the right stick, as on the horse and in split screen.");
+    Row("Mouse in menus");
+    if (ImGui::Checkbox("##mousemenus", &mouse_menus::g_on)) s_dirty = true;
+    Hint("In the game's menus the cursor picks a row, left click selects it, right click goes back, the wheel steps through the rows.");
     ImGui::Spacing();
     ImGui::Separator();
     ImGui::TextUnformatted("Key bindings");
@@ -572,6 +608,8 @@ void DrawFps(double fps) {
 void Ui(double fps) {
     ScaleUi();
     game_menu::Patch();
+    prompts::Frame();
+    mouse_menus::Frame();
     gpu::SetClearPresentedAlpha(g_ps2_alpha);
     if (s_game_open.exchange(false) && !s_open && !report::ReportOpen()) Open();
     bool toggle = s_pad_toggle.exchange(false);
@@ -604,6 +642,7 @@ constexpr uint16_t kStart = 1 << 4, kBack = 1 << 5;
 
 void Pad(int port, input::Pad& pad) {
     report::ReportPad(port, pad);
+    mouse_menus::Pad(port, pad);
     if (port == 0) {
         static bool combo = false;
         bool now = (pad.buttons & (kStart | kBack)) == (kStart | kBack);
@@ -643,6 +682,7 @@ bool MenuOpen() { return s_open; }
 void OpenFromGame() { s_game_open = true; }
 void MenuWindow(void* hwnd) { Window(hwnd); }
 bool MenuMessage(void* hwnd, uint32_t msg, uintptr_t wp, intptr_t lp, intptr_t* result) {
+    if (msg == WM_MOUSEWHEEL && !s_open) mouse_menus::Wheel(GET_WHEEL_DELTA_WPARAM(wp));
     return report::ReportMessage(hwnd, msg, wp, lp, result);
 }
 void MenuUi(double fps) { Ui(fps); }
