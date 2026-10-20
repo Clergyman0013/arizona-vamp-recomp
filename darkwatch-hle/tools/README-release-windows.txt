@@ -1,18 +1,25 @@
-Darkwatch (Xbox) recompiled - Windows x64 debug build
-=====================================================
+Arizona Vamp Recomp - Darkwatch (Xbox), native Windows port - beta
+==================================================================
 
-This is the HLE port: the game's Direct3D 8 runs on Direct3D 12 and its
-DirectSound on XAudio2. It is the first Windows build: it has been compiled
-but not yet run on Windows. On macOS it reaches the PRESS START screen.
-Expect problems; the logs are what is needed to fix them.
+A native PC port of Darkwatch for the original Xbox, made by static
+recompilation: the game's Direct3D 8 runs on Direct3D 12 and its DirectSound
+on XAudio2. This is a beta: the front end and the first level are tested,
+the rest of the game is not yet. https://github.com/Clergyman0013/arizona-vamp-recomp
 
-Needs Windows 10 or 11, 64-bit, and a GPU with Direct3D 12.
-No game data is included. You need your own copy of the game.
+Needs Windows 10 or 11, 64-bit, a GPU with Direct3D 12, and about 3 GB of
+free disk space. No game data or game code is included: you need your own
+copy of Darkwatch for the original Xbox (USA release).
 
-1. Put the game in the assets folder beside Darkwatch.exe: either the disc
+1. Put the game in the assets folder beside Darkwatch.exe: either your disc
    image (.iso), or default.xbe with the game's other files beside it.
 2. Run Darkwatch.exe. Windows SmartScreen may warn about an unknown app:
    More info, Run anyway.
+3. The first start builds the game's code for your PC from your own copy
+   (the compiler folder), behind a progress window. This takes a while and
+   happens only once; if it is stopped, the next start carries on. After
+   that the game starts straight away.
+4. Windows Firewall may ask whether Darkwatch.exe may use the network (the
+   game's system link). Cancel is fine for single player.
 
 Controls
 --------
@@ -51,11 +58,12 @@ percent (100 default).
 
 Logs
 ----
-  logs\darkwatch_NNN.log      one per run, numbered, newest 30 kept; verbose
-                              (debug build)
+  logs\                       the game's log, and compile.log from the
+                              first start's build
   CrashDumps\Darkwatch.*.dmp  written when it crashes
 Both folders are created beside Darkwatch.exe. Send the newest log, and the
-.dmp if there is one (with Darkwatch.pdb, which is in this zip).
+.dmp if there is one. Logs can hold your Windows user name in file paths:
+edit it out if you prefer.
 
 If the game stops moving, press F3: every guest thread's stack goes into the
 log. F3 saves the frame it captures to captures\ beside the exe (or the

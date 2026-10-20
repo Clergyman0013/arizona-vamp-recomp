@@ -70,6 +70,20 @@ menu still needed):
 | General | Pause on focus loss (game + sound) | no |
 | Misc | Custom menu cursor (`cursor.png`) | no |
 
+### Releases build the game code on the player's PC (2026-10-20)
+
+- SDK moved to upstream `main` 99078b1 plus the first-start compile (b47e2e9, which upstream reverted by
+  mistake a minute later; see `patches/README.md`). The game code is `Darkwatch.dll`, delay loaded by
+  `Darkwatch.exe`; our hooks stay in the exe, which exports them to the DLL.
+- `release.bat` zips the exe, the `compiler\` folder (xbe_recomp, clang, lld, the config and headers), the
+  player README and the VC runtime: **no game code**. The first start reads `default.xbe` from the `.iso` (or the
+  files) in `assets\`, builds the DLL behind a progress window (about 45 s on a 12-thread PC, 129 files), then
+  offers Start.
+- Checked 2026-10-20: dev build boots to the first level, PC SETTINGS from the pause menu opens the menu; release
+  zip unpacked to a fresh folder with the `.iso` only: first start built the DLL and the game booted.
+  Not checked since the SDK move: the meat-locker fog (upstream changed how render-target reads are offset).
+- The exe links with `/pdbaltpath:%_PDB%` so it holds no local build path.
+
 ### PC settings menu (2026-10-19)
 
 - **Open:** F1, or Back+Start on a pad, anywhere; **PC SETTINGS** in the pause

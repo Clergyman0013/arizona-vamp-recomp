@@ -14,6 +14,7 @@ Where Arizona Vamp Recomp is going. The quality bar is
 - Shader disk cache: no compile hitches after the first run.
 - In-game PC settings menu (F1, Back + Start, or PC SETTINGS in the game's own menus).
 - F4 bug-report box and F3 frame captures.
+- Releases ship no game code: the first start builds it from the player's own disc image or files.
 - Optional PS2 alpha blending (no previous-frame ghosting); anisotropic filtering, 16x by default.
 
 ## Next

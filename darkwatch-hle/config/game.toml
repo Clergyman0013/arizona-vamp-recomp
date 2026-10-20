@@ -6,6 +6,7 @@ title = 0x43430016
 entry = 0x159E95
 xdk = 5849
 out = "generated/game"
+library = "Darkwatch.dll"  # <exe>.dll, which the executable delay loads
 partitions = 128
 code_sections = [".text", "D3D", "XNET", "XONLINE", "D3DX", "DSOUND", "PSFD_I", "PSFD_B", "PSFD_P", "PSFD00", "WMADEC", "XACTENG", "XGRPH", "XPP"]
 

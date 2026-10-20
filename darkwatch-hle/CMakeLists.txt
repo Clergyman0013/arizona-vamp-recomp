@@ -39,3 +39,5 @@ endif()
 
 # target name = GAME_EXE in build.bat, xbe = GAME_XBE
 add_xbe_image(Darkwatch default.xbe game.toml ${GAME_PARTITIONS} game)
+# the executable names its PDB without the folder it was built in (no local paths in a release)
+target_link_options(Darkwatch PRIVATE "-Wl,/pdbaltpath:%_PDB%")

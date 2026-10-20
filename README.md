@@ -59,7 +59,18 @@ in the pause menu or the main menu's OPTIONS (it replaces the Xbox Live entry).
 - Fog-streak fix in the meat-locker corridor (the game's own screen-space texture scale, patched).
 - Xbox Live entries turned into the PC settings menu.
 
-## Building (Windows)
+## Installing (Windows)
+
+1. Download the zip from the [latest release](https://github.com/Clergyman0013/arizona-vamp-recomp/releases) and
+   unpack it anywhere (about 3 GB free needed).
+2. Put your game in the `assets` folder: your disc image (`.iso`), or `default.xbe` with the game's folders beside it.
+3. Run `Darkwatch.exe`. The first start builds the game's code for your PC from your own copy, behind a progress
+   window. That takes a while and happens only once; after it, the game starts straight away.
+
+The release contains no game code: it ships the recompiler and a compiler (Clang and LLD) instead, and the game is
+built on your PC from your files, as in [BLACK-XBERecomp](https://github.com/TGP482/BLACK-XBERecomp).
+
+## Building from source (Windows)
 
 You need:
 - Windows 10 or 11, 64-bit, and a GPU with Direct3D 12.
@@ -74,7 +85,7 @@ cd arizona-vamp-recomp
 
 rem the recompilation SDK, at the tested commit, with this project's patch
 git clone https://github.com/TGP482/XboxXBERecomp.git third_party\XboxXBERecomp
-git -C third_party\XboxXBERecomp checkout 40e9c35
+git -C third_party\XboxXBERecomp checkout 99078b1
 git -C third_party\XboxXBERecomp apply ..\..\patches\xboxxberecomp-darkwatch.patch
 
 rem copy default.xbe and the game's folders into darkwatch-hle\assets\, then:
@@ -82,7 +93,9 @@ darkwatch-hle\build.bat
 ```
 
 The first build recompiles the game and takes **30 to 90 minutes**; later builds take a few minutes. The result
-is `darkwatch-hle\out\build\release\Darkwatch.exe`. `build.bat` offers to start it when it is done.
+is `darkwatch-hle\out\build\release\Darkwatch.exe`, with the game code in `Darkwatch.dll` beside it. `build.bat`
+offers to start it when it is done. `darkwatch-hle\release.bat` then makes the release zip (it needs
+[7-Zip](https://www.7-zip.org/)), without the game code.
 
 If CMake fails while fetching its dependencies (some PCs with Mandatory ASLR on cannot run Git's shell scripts),
 run `darkwatch-hle\tools\deps_windows.bat` once, then `build.bat` again.
@@ -121,7 +134,7 @@ The full list is in [ROADMAP.md](ROADMAP.md). In short:
 ## How it works
 
 1. The SDK lifts every function in `default.xbe` to C++ (the `generated/` code, never committed: it is derived
-   from the game).
+   from the game) and builds it into `Darkwatch.dll`. A release does this on the player's PC on its first start.
 2. The Xbox kernel and the XDK libraries (Direct3D 8, DirectSound, XInput, file system) are replaced by high-level
    implementations on Windows APIs. `config/game.toml` names the XDK functions inside the game.
 3. Game-specific fixes hook single recompiled functions (`darkwatch-hle/src/game/`), and the PC menus sit on the

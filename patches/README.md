@@ -106,13 +106,24 @@ except the comments that say where each problem was found.
 
 `third_party/XboxXBERecomp` is a clone of upstream
 [TGP482/XboxXBERecomp](https://github.com/TGP482/XboxXBERecomp) (MIT) at commit
-40e9c35. The changes this port needed are in `xboxxberecomp-darkwatch.patch`:
+99078b1 (its `main`, 2026-10-18). The changes this port needed are in `xboxxberecomp-darkwatch.patch`:
 
 ```bash
 git clone https://github.com/TGP482/XboxXBERecomp third_party/XboxXBERecomp
-git -C third_party/XboxXBERecomp checkout 40e9c35
+git -C third_party/XboxXBERecomp checkout 99078b1
 git -C third_party/XboxXBERecomp apply ../../patches/xboxxberecomp-darkwatch.patch
 ```
+
+**Moved from 40e9c35 to 99078b1 (2026-10-20).** Upstream added "game code builds into a DLL the first start
+compiles" in b47e2e9 and reverted it in 3010abc a minute later, while 99078b1's `release.bat` and README still
+describe it. The patch puts b47e2e9 back in full (this is what lets a release ship the compiler instead of the game
+code), then the Darkwatch changes below. Merges on the way:
+
+| File | Merge |
+|---|---|
+| `cmake/XbeRecomp.cmake` | the cross-build `XBE_RECOMP_EXECUTABLE` switch kept around upstream's `xbe_recomp` (now built into `compiler/`), the codegen step also writes the DLL's export/import `.def` files and `code.lib` |
+| `runtime/core/input.cpp` | the raw mouse registration runs before upstream's early return (the game code window starts SDL before the game window exists) |
+| `runtime/gpu/d3d12.cpp` | upstream's `rtshift` (render target reads follow the console's pixel offset, 09f0a37) replaces our fixed half-texel shift; our multisampled back buffer scale on `texsize` stays |
 
 | File | Change | Why |
 |---|---|---|
