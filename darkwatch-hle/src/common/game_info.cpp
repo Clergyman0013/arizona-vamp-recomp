@@ -16,7 +16,7 @@ void MenuUi(double fps);
 void MenuPad(int port, input::Pad& pad);
 }  // namespace menu
 
-// src/common/content.cpp: the War Train and Splitter selectors, patched as packfile.pck is read
+// src/common/content.cpp: the War Train and Splitter selectors, patched as the packs are read
 namespace content {
 extern bool g_bonus;
 void Read(const std::string& xbox, uint64_t pos, uint8_t* data, uint32_t len);
