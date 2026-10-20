@@ -173,6 +173,7 @@ see [CONTRIBUTING.md](CONTRIBUTING.md). Please do not attach game files or anyth
   (with parts from [xemu](https://xemu.app/), LGPL-2.1).
 - [Dear ImGui](https://github.com/ocornut/imgui), [SDL](https://github.com/libsdl-org/SDL),
   [Zydis](https://github.com/zyantific/zydis), [toml++](https://github.com/marzer/tomlplusplus).
+- High Moon Studios for making this classic. 
 
 ## Legal
 
