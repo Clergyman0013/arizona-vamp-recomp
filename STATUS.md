@@ -59,7 +59,7 @@ menu still needed):
 | Display | HDR10 output | no |
 | Display | FPS counter | have (`show_fps`, Game page) |
 | Display | FMV scale (fill / 4:3) | no; check how movies draw |
-| Graphics | MSAA 2x/4x/8x | no (look for SDK support first) |
+| Graphics | MSAA 2x/4x/8x | have (`msaa`, Graphics page) |
 | Graphics | SMAA | no |
 | Graphics | Anisotropic filtering | have (`anisotropic_filtering`, default 16x) |
 | Graphics | Draw distance 2x-16x | no; game patch (LOD / far clip) |
@@ -97,8 +97,40 @@ Its feature list (another port on the same SDK and the same USA disc), less its 
 - **QUIT TO DESKTOP** in the main menu (`src/game/menu_hooks.cpp`): a row made in code after the main page builds
   (`sub_000EA7F6`). Gotcha: a text element made in code is 0x80 bytes; copying one field past that from a
   front-end row corrupted the heap and crashed when the main page was freed.
-- **Controllers:** already through SDL3 (PlayStation, Switch, Joy-Cons paired by SDL's default). Their button
-  pictures in the game's prompts, mouse-driven game menus and MSAA are left for later.
+- **Controllers:** already through SDL3 (PlayStation, Switch, Joy-Cons paired by SDL's default). Button prompts,
+  mouse menus and MSAA followed the same day (below).
+
+### Co-op public, button prompts, mouse menus, MSAA (2026-10-20, v0.5.0)
+
+- **Co-op** (`src/game/coop_hooks.cpp`, was a local branch): MULTIPLAYER takes the PS2 link (VERSUS / CO-OP popup,
+  `sub_000EA939`); co-op levels use the single-player `_StreamFile.str` and `_resources` lists (`sub_000CC4C4`);
+  ports 3 and 4 report plugged in once CO-OP is picked. Checked again on master: profile screen, chapter, WrongTrain
+  split screen with two players (player 2 a test pad, `XBE_COOP_P2`). Both players use the single-player model;
+  the PS2's Regulator model for player 2 is open (task-014). No full co-op play-through yet.
+- **Button prompts** (`src/common/prompts.cpp`): a prompt token (`^MenuSelect`) becomes a lower-case character of
+  the game font through `sub_001EA201` and the button-to-character table at `0x43BBB0` (ordinary text is made upper
+  case, so a-z are free): `a` X, `b` Y, `c` A, `d` B. Both fonts (white, and red for a picked row) are 256x256 P8
+  with the four pictures at x 71/93/115/138, y 35, 13x14 texels. They are found by their colours as the renderer
+  decodes them (SDK `GameInfo::texture`) and drawn again: PlayStation shapes, Switch letters (south B, east A, west Y,
+  north X). `button_prompts`: the controller in use (SDL's pad type for port 0, Xbox while the keyboard or mouse was
+  used last), Xbox, PlayStation, Switch; a change decodes the fonts again (`gpu::MarkDirtyData`). Checked: PlayStation
+  and Switch forced, and switched live from the menu; real PlayStation and Switch pads not tried. Triggers, shoulder
+  buttons, Start and Back keep their Xbox pictures.
+- **Mouse menus** (`src/game/mouse_menus.cpp`): a menu (vtable `0x43C8B8`) takes input in `sub_001EF55C`; its box
+  (`+0x10`, centre and half size in its parent's box, -1 to 1, y up) through its parents (`+0x04`) gives the screen
+  rect, and its shown rows are equal bands from the top (`sub_001EF781`). Pointing picks a row (move sound
+  `sub_001E917C`, `SetSelected` `sub_001EF329`); left click is A on it, right click B, the wheel the d-pad. The cursor
+  is free (SDK `input::SetPointer`) while a menu took input in the last 250 ms, or 1.5 s with the player's view
+  standing (a screen change). Checked: main menu, OPTIONS, back, wheel, pause menu hover and RESUME, mouse look after.
+  Screens that are not menus (CHAPTER, the briefing) keep the mouse as before.
+- **MSAA** (SDK `d3d12.cpp`): the back-buffer-sized colour and depth targets get a multisampled twin; draws go there
+  when all bound targets have one; anything else that reads a target resolves it first (colour `ResolveSubresource`,
+  depth by a pass writing sample 0, stencil not carried); uploads, copies and depth copies mark the twin behind, and
+  the next draw fills it from the plain target. Checked at 4x: front end, level, pause, co-op split screen, and the
+  D3D12 debug layer through the level (no messages). The gun's seams show a few more white dots than without
+  (cracks in the model, there at 1x too).
+- **Xbox Live status line:** `sub_000F023A` shows one of four `XBL_LiveAware_*` texts ("Sign-in failed." here); the
+  four texts in packfile.pck become spaces as it is read (`content.cpp`).
 
 ### CRI movie crash fixed (2026-10-20)
 

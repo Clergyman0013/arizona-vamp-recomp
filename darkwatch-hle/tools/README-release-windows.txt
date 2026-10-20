@@ -26,9 +26,22 @@ copy of Darkwatch for the original Xbox (USA release).
    straight to the game; "Don't show this again" (X, Space) turns this off,
    and PC settings, Graphics, "Precompile shaders" turns it back on.
 
+Two-player co-op
+----------------
+The PS2 version's split-screen campaign, left off the Xbox release, is back.
+Main menu, MULTIPLAYER, CO-OP: both players press A on the profile screen,
+then pick a chapter. Player 1 is the first controller (or the keyboard and
+mouse), player 2 the second controller. Both players look like the
+single-player hero for now.
+
 Controls
 --------
 A controller works as on the console (Xbox, PlayStation and Switch pads).
+The game's button prompts show the buttons of the controller in use:
+PlayStation shapes, Switch letters, Xbox buttons for Xbox pads and the
+keyboard (PC settings, Controls, Button prompts).
+In the game's menus the mouse points: left click selects, right click goes
+back, the wheel steps through the rows.
 The keyboard and mouse also work, as player 1:
 
   W A S D           move (left stick)
@@ -90,10 +103,11 @@ PC settings
   it is also PC SETTINGS in the pause menu and in the main menu's OPTIONS
   (where Xbox Live used to be). Pages: Display (mode, resolution, render
   resolution, frame rate cap, V-Sync), Graphics (PS2 alpha blending,
-  anisotropic filtering: 16x by default, precompile shaders, field of view,
-  weapon field of view, widescreen framing, reticle size, cut-scene
-  borders), Controls (keyboard and mouse, sensitivity, direct mouse aiming,
-  key bindings), Game (frame rate counter, War Train and Splitter grenades).
+  anisotropic filtering: 16x by default, MSAA anti-aliasing, precompile
+  shaders, field of view, weapon field of view, widescreen framing, reticle
+  size, cut-scene borders), Controls (button prompts, keyboard and mouse,
+  sensitivity, direct mouse aiming, mouse in menus, key bindings), Game
+  (frame rate counter, War Train and Splitter grenades).
   Changes apply at once; a new display mode asks to keep it and goes back
   after 15 s. Settings are saved when the menu closes. Exit to Desktop is at
   the bottom right. The game gets no input while it is open.
@@ -101,7 +115,8 @@ PC settings
   The same settings in settings.toml: fov and weapon_fov (degrees across a
   4:3 frame, 0 the game's 55), widescreen_fov, reticle_size (percent),
   cutscene_borders, mouse_direct_aim, bonus_content (War Train and the
-  Splitter grenades; read at start).
+  Splitter grenades; read at start), msaa (0 off, 2, 4, 8), button_prompts
+  (0 the controller in use, 1 Xbox, 2 PlayStation, 3 Switch), mouse_menus.
 
   The main menu also has QUIT TO DESKTOP. Saves are kept in hdd\E beside
   Darkwatch.exe: copy that folder to keep them.

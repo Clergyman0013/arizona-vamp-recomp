@@ -25,19 +25,22 @@ Where Arizona Vamp Recomp is going. The quality bar is
 - QUIT TO DESKTOP in the main menu.
 - The War Train chapter and the Splitter grenades the Xbox disc leaves off (selectors swapped as the packs are
   read).
+- **Two-player co-op campaign** (the PS2 version's split screen, switched off on the Xbox disc).
+- Button prompts for the controller in use (PlayStation shapes, Switch letters).
+- Mouse in the game's menus: point, click, right click to go back, the wheel.
+- MSAA 2x / 4x / 8x.
+- The front end's Xbox Live status line ("Sign-in failed.") is gone.
 
 ## Next
 
 1. **Play-through QA.** Play every level, file F4 reports, fix what turns up. Compare against console footage.
    Includes War Train and the Splitter pickups, which have not been played yet.
-2. **PlayStation and Switch button pictures** in the game's prompts (the pads work already; the prompts show Xbox
-   buttons).
-3. **Mouse-driven game menus:** point and click, the wheel, right-click to go back.
-4. **MSAA.**
-5. Direct mouse aiming on the horse (it uses the mouse as the stick for now).
-6. Keep the HUD and menus in proportion on a wide screen (they are stretched from 4:3).
-7. Exit to Desktop in the pause menu too; hide the leftover Xbox Live notices ("SIGN-IN FAILED.").
-8. F1 in gameplay also pauses the game.
+2. **Co-op:** player 2's own model (the PS2 shows them as a Darkwatch Regulator), a full co-op play-through.
+3. Real PlayStation and Switch pads checked on the prompts; pictures for their triggers and shoulder buttons too.
+4. Direct mouse aiming on the horse (it uses the mouse as the stick for now).
+5. Keep the HUD and menus in proportion on a wide screen (they are stretched from 4:3).
+6. Exit to Desktop in the pause menu too.
+7. F1 in gameplay also pauses the game.
 
 ## PC features (the BLACK list)
 
@@ -54,15 +57,17 @@ Where Arizona Vamp Recomp is going. The quality bar is
 | Display | HDR10 output | planned |
 | Display | Ultrawide | planned, after the first release |
 | Graphics | Anisotropic filtering | done |
-| Graphics | MSAA 2x / 4x / 8x, SMAA | planned |
+| Graphics | MSAA 2x / 4x / 8x | done |
+| Graphics | SMAA | planned |
 | Graphics | Draw distance | planned (game patch) |
 | Graphics | Ambient occlusion | maybe (needs depth; hard) |
 | Input | Keyboard and mouse, raw input, rebinding | done |
 | Input | Mouse invert | planned |
 | Input | Direct mouse aiming | done (on foot; the horse later) |
-| Input | Controllers through SDL3 (Xbox, PlayStation, Switch, Joy-Cons) | done; their button prompts planned |
+| Input | Controllers through SDL3 (Xbox, PlayStation, Switch, Joy-Cons) | done, with their button prompts (face buttons) |
 | Input | Gyro aiming | planned |
-| Input | Mouse-driven game menus | planned |
+| Input | Mouse-driven game menus | done |
+| General | Two-player co-op campaign | done (player 2's model later) |
 | General | Skip movies with Start / Escape | partly (the intro skips) |
 | General | Pause on focus loss (game and sound) | planned |
 | General | Custom menu cursor | planned |

@@ -4,8 +4,8 @@
 
 The game's Xbox executable is translated ahead of time into native x86-64 code. Its graphics and sound calls are
 answered by modern APIs: Direct3D 8 runs on **Direct3D 12**, DirectSound on **XAudio2**. Nothing is emulated at
-run time, so the game runs at full speed with PC features layered on top: real display modes, render scaling,
-keyboard and mouse, and an in-game settings menu.
+run time, so the game runs at full speed with PC features layered on top: the **two-player co-op campaign** the
+Xbox release left out, real display modes, render scaling, MSAA, keyboard and mouse, and an in-game settings menu.
 
 > **No game data is included.** You need your own copy of Darkwatch for the original Xbox.
 > This project is not affiliated with or endorsed by the game's publisher or developer.
@@ -14,6 +14,23 @@ keyboard and mouse, and an in-game settings menu.
   <img src="docs/images/level1.png" width="49%" alt="The first level, THE WRONG TRAIN, rendered by the port">
   <img src="docs/images/pc-settings.png" width="49%" alt="The in-game PC settings menu">
 </p>
+
+## Standout feature: two-player co-op campaign
+
+**Play the whole campaign with a friend, split screen, on one PC.** Co-op was a PlayStation 2 exclusive: the Xbox
+release shipped without it. Its code and menus are still on the Xbox disc, switched off, and this port turns them
+back on:
+
+- Main menu, **MULTIPLAYER**: the game now asks **VERSUS** or **CO-OP**.
+- **CO-OP** opens the two-player profile screen (both players press A), then the chapter list, and the chapters
+  play split screen with two gunslingers.
+- Player 1 uses the first controller (or keyboard and mouse), player 2 the second controller (Xbox, PlayStation
+  or Switch).
+- Versus split screen (up to four players) is unchanged.
+
+Co-op runs on the single-player level files (the co-op versions of a few files were never put on the Xbox disc).
+Both players currently look like the single-player hero; giving player 2 their own model is on the roadmap. Co-op has
+been tested through the start of the first chapter so far: tell us how far you get (F4 report).
 
 ## Status
 
@@ -43,18 +60,24 @@ Day-to-day progress, findings and open bugs are in [STATUS.md](STATUS.md).
 in the pause menu or the main menu's OPTIONS (it replaces the Xbox Live entry).
 - **Display:** fullscreen / borderless / windowed, resolution, render resolution 25-200%, frame-rate cap, V-Sync.
   A new display mode asks to be kept and goes back after 15 seconds.
-- **Graphics:** field of view and a separate weapon field of view, widescreen framing (a wide screen shows more
-  at the sides instead of a stretched 4:3 picture), reticle size, in-level cut-scene borders on or off,
-  anisotropic filtering (16x by default), optional *PS2 alpha blending* (removes the previous-frame ghosting that
-  the Xbox version has).
-- **Controls:** keyboard and mouse on or off, mouse look and sensitivity, direct mouse aiming, key rebinding.
+- **Graphics:** **MSAA anti-aliasing (2x / 4x / 8x)**, field of view and a separate weapon field of view,
+  widescreen framing (a wide screen shows more at the sides instead of a stretched 4:3 picture), reticle size,
+  in-level cut-scene borders on or off, anisotropic filtering (16x by default), optional *PS2 alpha blending*
+  (removes the previous-frame ghosting that the Xbox version has).
+- **Controls:** button prompts (the controller in use, or Xbox / PlayStation / Switch), keyboard and mouse on or
+  off, mouse look and sensitivity, direct mouse aiming, mouse in the game's menus, key rebinding.
 - **Game:** frame-rate counter, the War Train chapter and Splitter grenades (below).
 - Changes apply at once and are saved to `settings.toml`. Exit to Desktop is one click away.
 
 **Input**
 - Controllers work as on the console: Xbox, PlayStation and Switch Pro pads, and paired Joy-Cons (through SDL;
   the buttons go by position, so a Switch pad's bottom button is A).
+- **Button prompts that match your controller:** with a PlayStation pad the game's prompts show cross, circle,
+  square and triangle; with a Switch pad its letters (B, A, Y, X by position). Xbox pads and the keyboard keep the
+  Xbox buttons. The pictures switch as soon as you pick up another controller.
 - Full keyboard and mouse support for player 1, with raw mouse look and rebindable keys.
+- **Mouse in the game's menus:** point at a row to pick it, left click selects, right click goes back, the wheel
+  steps through the rows. The cursor shows in menus and the mouse goes back to looking when play resumes.
 - **Direct mouse aiming** on foot: the view turns by how far the mouse moves, with no stick curve and no aim
   assist. On the horse and in split screen the mouse works as the right stick.
 
@@ -73,7 +96,7 @@ in the pause menu or the main menu's OPTIONS (it replaces the Xbox Live entry).
   (doors, enemies) stood still at 120 or 144 fps. They now run every frame.
 - **QUIT TO DESKTOP** in the main menu.
 - Fog-streak fix in the meat-locker corridor (the game's own screen-space texture scale, patched).
-- Xbox Live entries turned into the PC settings menu.
+- Xbox Live entries turned into the PC settings menu, and the front end's "Sign-in failed." status line gone.
 - Saves stay beside the game (`hdd\E`), so a copied folder keeps them.
 
 ## Installing (Windows)
@@ -142,12 +165,12 @@ The quality bar is [BLACK-XBERecomp](https://github.com/TGP482/BLACK-XBERecomp),
 The full list is in [ROADMAP.md](ROADMAP.md). In short:
 
 1. **Play-through QA:** play the whole game, file F4 reports, fix as they come.
-2. **More PC options:** MSAA / SMAA, monitor choice, draw distance, FMV scaling, pause on focus loss, mouse
-   invert, HDR10.
-3. **Polish:** PlayStation and Switch button pictures in the game's prompts, mouse-driven game menus, direct
-   mouse aiming on the horse, the HUD kept in proportion on a wide screen, hide the leftover Xbox Live notices,
-   background shader compiles so even the very first run does not stutter.
-4. **More platforms:** macOS, then Android.
+2. **Co-op:** player 2's own model, a full co-op play-through, keyboard and mouse for either player.
+3. **More PC options:** SMAA, monitor choice, draw distance, FMV scaling, pause on focus loss, mouse invert, HDR10.
+4. **Polish:** direct mouse aiming on the horse, the HUD kept in proportion on a wide screen, PlayStation and
+   Switch pictures for the triggers and shoulder buttons, background shader compiles so even the very first run
+   does not stutter.
+5. **More platforms:** macOS, then Android.
 
 ## How it works
 
@@ -185,8 +208,11 @@ see [CONTRIBUTING.md](CONTRIBUTING.md). Please do not attach game files or anyth
 - [XboxXBERecomp](https://github.com/TGP482/XboxXBERecomp) by TGP482: the static recompilation SDK this port is built on.
 - [BLACK-XBERecomp](https://github.com/TGP482/BLACK-XBERecomp): the quality bar.
 - [Darkwatch: Darker Edition](https://github.com/linkssy2/DarkwatchDarkerEdition) by linkssy2, another port on the
-  same SDK: its feature list, its War Train / Splitter selectors and its finding of the 100 fps script gate led
-  ours (our code is our own).
+  same SDK. Its feature list was the reference for this port's PC features: field of view, widescreen framing,
+  direct mouse aiming, reticle size, cut-scene borders, quit to desktop, the 100 fps script fix, War Train and the
+  Splitter grenades, button prompts for PlayStation and Switch pads, mouse-driven menus, MSAA and the removed
+  sign-in notices. Its game addresses and findings were our leads; each was checked in our own disassembly, and our
+  code and pictures are our own.
 - [xboxrecomp](https://github.com/sp00nznet/xboxrecomp) by sp00nznet: the toolkit behind the reference port
   (with parts from [xemu](https://xemu.app/), LGPL-2.1).
 - [Dear ImGui](https://github.com/ocornut/imgui), [SDL](https://github.com/libsdl-org/SDL),
