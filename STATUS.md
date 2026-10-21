@@ -71,6 +71,16 @@ menu still needed):
 | General | Pause on focus loss (game + sound) | no |
 | Misc | Custom menu cursor (`cursor.png`) | no |
 
+### Field of view fix, mouse look logging (2026-10-21, v0.5.1)
+
+- The field of view setting widened the view across only, which squeezed the world sideways. It now widens width
+  and height together (as BLACK-XBERecomp does); Hor+ still adds width only. Checked at 90 in THE WRONG TRAIN.
+- F4 reports now log window focus changes (with the class of the window that took the foreground), mouse look
+  on/off and the mouse-menu pointer, to find why mouse look sometimes stops until a click. Open: a window that takes
+  the foreground (a toast, an overlay) stops mouse look until the game is clicked; the game cannot take it back.
+- Junior task-014 (a Regulator body for player 2) stopped at its off-ramp: `CoOpChaz` is never used at spawn, and the
+  co-op resource lists hang LOADING. Notes are local.
+
 ### PC features after Darkwatch: Darker Edition (2026-10-20)
 
 Its feature list (another port on the same SDK and the same USA disc), less its HD artwork, done our own way:
