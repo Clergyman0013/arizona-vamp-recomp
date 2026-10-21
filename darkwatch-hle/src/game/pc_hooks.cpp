@@ -70,8 +70,8 @@ uint32_t LocalPlayers() {
 // camera the view window tan(angle / 2) * scale wide, that over the aspect high. The player's camera is the one
 // sub_000F9B1D makes (its only caller is the player view's setup): the aspect is 4:3, so on a wide screen the frame is
 // stretched across it. Each time that camera starts a frame (sub_00216AF7, its BeginUpdate) the window is set again
-// from the camera's own angle, wider for the field of view setting and for a wide screen (Hor+: the height stays the
-// game's), so the game's zooms keep working on top. The first-person arms and gun draw through the same camera in
+// from the camera's own angle, wider and taller for the field of view setting, and wider for a wide screen (Hor+: the
+// height stays the game's), so the game's zooms keep working on top. The first-person arms and gun draw through the same camera in
 // sub_000DEDD0, between their own BeginUpdate and EndUpdate, and get the weapon setting.
 namespace {
 constexpr int kCams = 4;  // one a local player
@@ -90,8 +90,9 @@ void SetWindow(X86Context& ctx, uint32_t cam, bool weapon) {
     float aspect = F32(cam + 0x40), angle = F32(cam + 0x44), scale = F32(cam + 0x48);
     if (!rw || !(aspect > 0) || !(angle > 0 && angle < 180) || !(scale > 0)) return;
     float wide = menu::g_widescreen && app::Widescreen() ? (16.0f / 9.0f) / (4.0f / 3.0f) : 1.0f;
-    float x = std::tan(angle * kPi / 360.0f) * scale;
-    float w[2] = {x * wide * FovScale(weapon ? menu::g_weapon_fov : menu::g_fov), x / aspect};
+    // the setting widens both ways (the picture keeps its shape); a wide screen only across
+    float x = std::tan(angle * kPi / 360.0f) * scale * FovScale(weapon ? menu::g_weapon_fov : menu::g_fov);
+    float w[2] = {x * wide, x / aspect};
     if (F32(rw + 0x68) == w[0] && F32(rw + 0x6C) == w[1]) return;
     uint32_t esp = ctx.esp;
     ctx.esp -= 0x20;
