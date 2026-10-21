@@ -15,7 +15,7 @@ Xbox release left out, real display modes, render scaling, MSAA, keyboard and mo
   <img src="docs/images/pc-settings.png" width="49%" alt="The in-game PC settings menu">
 </p>
 
-## Standout feature: two-player co-op campaign
+## Two-player Split-screen Co-op campaign
 
 **Play the whole campaign with a friend, split screen, on one PC.** Co-op was a PlayStation 2 exclusive: the Xbox
 release shipped without it. Its code and menus are still on the Xbox disc, switched off, and this port turns them
