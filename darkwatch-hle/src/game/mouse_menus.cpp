@@ -42,6 +42,7 @@ constexpr uint64_t kGrace = 1500;
 
 std::atomic<uint64_t> s_menu_at{0};  // when a menu last took input, ms
 std::atomic<uint64_t> s_play_at{0};  // when the player's view last turned, ms
+std::atomic<uint32_t> s_last_menu{0};  // the menu that last took input (for the log)
 std::atomic<int> s_presses[4] = {};  // A, B, up, down: presses for the pad hook to make
 bool s_left = false, s_right = false;  // the buttons as last seen
 int s_last_x = -1, s_last_y = -1;    // the cursor as last seen
@@ -130,6 +131,7 @@ Press s_press[4];
 void MenuInput(X86Context& ctx, uint32_t m) {
     if (!g_on || !app::Get().keyboard || !kernel::g_base[m + 0xA1]) return;
     s_menu_at = Now();
+    s_last_menu = m;
     static bool was_on = false;  // the pointer, as this saw it last
     if (!input::Pointer()) {
         was_on = false;
@@ -169,10 +171,27 @@ void MenuInput(X86Context& ctx, uint32_t m) {
 
 // each frame (render thread): the cursor is free while a menu took input in the last moment
 void Frame() {
+    // the window losing or getting the foreground stops or starts mouse look: F4 reports show when
+    static int s_focus = -1;
+    HWND hwnd = static_cast<HWND>(app::Window());
+    int focus = hwnd && GetForegroundWindow() == hwnd;
+    if (focus != s_focus) {
+        char cls[64] = "none";
+        if (!focus)
+            if (HWND fg = GetForegroundWindow()) GetClassNameA(fg, cls, sizeof(cls));
+        LOGR("input: window %s (foreground: %s)", focus ? "has focus" : "lost focus", focus ? "this" : cls);
+        s_focus = focus;
+    }
+    static int s_captured = -1;
+    int captured = input::MouseCaptured();
+    if (captured != s_captured) {
+        LOGR("input: mouse look %s (focus %d, pointer %d)", captured ? "on" : "off", focus, input::Pointer());
+        s_captured = captured;
+    }
     bool want = g_on && app::Get().keyboard && !menu::MenuOpen() && Held(Now());
     if (want != input::Pointer()) {
         input::SetPointer(want);
-        LOGI("mouse menus: pointer %s", want ? "on" : "off");
+        LOGR("mouse menus: pointer %s (menu %08X)", want ? "on" : "off", s_last_menu.load());
         if (!want)
             for (auto& p : s_presses) p = 0;
     }
