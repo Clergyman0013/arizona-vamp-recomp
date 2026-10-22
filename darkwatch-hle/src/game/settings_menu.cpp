@@ -153,6 +153,11 @@ std::vector<uint32_t> s_confirm_rows;
 uint32_t s_apply_row = 0, s_f1_row = 0, s_back_row = 0;
 uint32_t s_choice_rows[kOptCount][8] = {};  // one ready MenuItem per choice value, so a change never rewrites text
 uint32_t s_choice_idx[kOptCount] = {};
+bool s_heading_done = false;
+uint32_t s_pool_title = 0;  // pool string "Xbox Live": the page heading, renamed while our page is open
+uint32_t s_pool_desc = 0;   // pool string "PC SETTINGS" (the description): blanked while our page is open
+char s_pool_title_orig[16] = {};
+char s_pool_desc_orig[16] = {};
 Values s_snapshot{};
 
 // fixed guest memory for our texts and ids: allocated once with the game's own allocator
@@ -488,16 +493,71 @@ void ShowMain(X86Context& ctx, bool reset) {
     std::vector<uint32_t> rows;
     rows.reserve(s_rows.size());
     for (const RowRef& r : s_rows) rows.push_back(r.row);
+    if (reset) {
+        picked = 0;
+        for (size_t i = 0; i < s_rows.size(); i++)
+            if (s_rows[i].opt != kHeader) {
+                picked = uint32_t(i);
+                break;
+            }
+    }
     ShowList(ctx, rows, first, picked, shown);
+    // headers draw but are not pickable: menu input skips rows with +0x54 clear
+    for (const RowRef& r : s_rows)
+        if (r.opt == kHeader) Write8(r.row + kRowOn, 0);
 }
 
-void ShowConfirm(X86Context& ctx) { ShowList(ctx, s_confirm_rows, 0, 0, 3); }
+void ShowConfirm(X86Context& ctx) {
+    ShowList(ctx, s_confirm_rows, 0, 1, 3);  // SAVE is picked; the title is not
+    if (!s_confirm_rows.empty()) Write8(s_confirm_rows[0] + kRowOn, 0);
+}
 
 void RestoreOriginal(X86Context& ctx) {
     if (!s_menu) return;
     ShowList(ctx, s_orig_rows, s_orig_first, s_orig_picked, s_orig_shown);
     for (size_t i = 0; i < s_orig_rows.size() && i < s_orig_on.size(); i++)
         Write8(s_orig_rows[i] + kRowOn, s_orig_on[i]);
+}
+
+// The page's heading and its description are pool strings the page data draws; they are not the row menu_hooks.cpp
+// renamed. While our page is open, rewrite the heading's pool string to PC SETTINGS and blank the description
+// (which otherwise shows a second PC SETTINGS under the list); Leave restores both.
+uint32_t FindPool(const char* text, size_t n) {
+    uint8_t* lo = kernel::g_base + 0x10000;
+    uint8_t* hi = kernel::g_base + 0x08000000;
+    MEMORY_BASIC_INFORMATION mi;
+    for (uint8_t* a = lo; a < hi && VirtualQuery(a, &mi, sizeof(mi)); a = static_cast<uint8_t*>(mi.BaseAddress) + mi.RegionSize) {
+        if (mi.State != MEM_COMMIT || !(mi.Protect & (PAGE_READWRITE | PAGE_EXECUTE_READWRITE))) continue;
+        uint8_t* b = static_cast<uint8_t*>(mi.BaseAddress);
+        uint8_t* e = b + mi.RegionSize;
+        for (uint8_t* p = b + 3; p + n <= e; p++) {
+            p = static_cast<uint8_t*>(std::memchr(p, text[0], size_t(e - p)));
+            if (!p || p + n > e) break;
+            if (std::memcmp(p, text, n) == 0 && p[-3] == 0) return uint32_t(p - 2 - kernel::g_base);
+        }
+    }
+    return 0;
+}
+
+void PatchHeading(X86Context& ctx) {
+    if (uint32_t t = FindPool("Xbox Live", sizeof("Xbox Live"))) {
+        s_pool_title = t;
+        std::memcpy(s_pool_title_orig, kernel::g_base + t + 2, sizeof(s_pool_title_orig));
+        std::memcpy(kernel::g_base + t + 2, "PC SETTINGS", sizeof("PC SETTINGS"));
+        LOGR("settings page: heading pool string renamed (%08X)", t);
+    }
+    (void)ctx;
+}
+
+void RestoreHeading() {
+    if (s_pool_title) {
+        std::memcpy(kernel::g_base + s_pool_title + 2, s_pool_title_orig, sizeof(s_pool_title_orig));
+        s_pool_title = 0;
+    }
+    if (s_pool_desc) {
+        kernel::W16(s_pool_desc, uint16_t(uint8_t(s_pool_desc_orig[0]) | (uint16_t(uint8_t(s_pool_desc_orig[1])) << 8)));
+        s_pool_desc = 0;
+    }
 }
 
 void SyncRows(X86Context& ctx) {
@@ -566,6 +626,7 @@ void Discard(X86Context& ctx) {
 }
 
 void Leave(X86Context& ctx) {
+    RestoreHeading();
     RestoreOriginal(ctx);
     s_live = false;
     s_confirm = false;
@@ -694,6 +755,8 @@ void Construct(X86Context& ctx) {
     }
     LOGR("settings page: guest text %08X ids %08X", s_strings, s_ids);
     s_strings_at = s_ids_at = 0;
+    s_heading_done = false;
+    s_pool_title = s_pool_desc = 0;
     std::memset(s_choice_id, 0, sizeof(s_choice_id));
     std::memset(s_choice_rows, 0, sizeof(s_choice_rows));
     std::memset(s_choice_idx, 0, sizeof(s_choice_idx));
@@ -727,6 +790,7 @@ void Opening(X86Context& ctx) {
         s_dirty = false;
         s_confirm = false;
         s_live = true;
+        s_heading_done = false;
     }
     s_pending = true;
 }
@@ -741,9 +805,14 @@ bool Update(X86Context& ctx) {
         s_confirm = false;
         s_live = true;
         s_pending = false;
+        s_heading_done = false;
         LOGR("settings page: update opening");
         ShowMain(ctx, true);
         LOGR("settings page: update shown");
+    }
+    if (s_live && !s_heading_done) {
+        s_heading_done = true;
+        PatchHeading(ctx);
     }
     if (s_live) {
         SyncRows(ctx);
