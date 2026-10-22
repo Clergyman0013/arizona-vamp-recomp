@@ -681,6 +681,16 @@ void Window(void* hwnd) {
 
 bool MenuOpen() { return s_open; }
 void OpenFromGame() { s_game_open = true; }
+// the game's KEY BINDINGS row: the overlay on its Controls page, where the keys are captured
+void OpenControls() {
+    s_page = 2;
+    s_game_open = true;
+}
+// the monitor's resolutions for the game's own resolution row, largest first (built by ReadModes)
+const std::vector<app::Mode>& Modes() {
+    if (s_modes.empty()) ReadModes();
+    return s_modes;
+}
 void MenuWindow(void* hwnd) { Window(hwnd); }
 bool MenuMessage(void* hwnd, uint32_t msg, uintptr_t wp, intptr_t lp, intptr_t* result) {
     if (msg == WM_MOUSEWHEEL && !s_open) mouse_menus::Wheel(GET_WHEEL_DELTA_WPARAM(wp));
