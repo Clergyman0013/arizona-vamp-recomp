@@ -235,7 +235,13 @@ void Pad(int port, input::Pad& pad) {
 
 X86_EXTERN_FUNC(__imp__sub_001EF55C);
 X86_FUNC(sub_001EF55C) {
-    settings_menu::MenuInput(ctx, ctx.ecx);  // the native PC SETTINGS page: left/right change the selected value
+    // the native PC SETTINGS page: left/right change the selected value. It calls guest code, which leaves other
+    // values in the registers; the menu input below needs its own this (ecx) back.
+    const uint32_t menu = ctx.ecx, eax = ctx.eax, edx = ctx.edx;
+    settings_menu::MenuInput(ctx, menu);
+    ctx.ecx = menu;
+    ctx.eax = eax;
+    ctx.edx = edx;
     mouse_menus::MenuInput(ctx, ctx.ecx);
     __imp__sub_001EF55C(ctx, base);
 }

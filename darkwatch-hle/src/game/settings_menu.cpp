@@ -70,6 +70,7 @@ constexpr uint32_t kAlloc = 0x0024C546;      // operator new, cdecl
 constexpr uint32_t kIntern = 0x000138FA;     // StringId(const char*), thiscall on the id, ret 4
 constexpr uint32_t kRelease = 0x00011C1A;    // ~StringId, thiscall
 constexpr uint32_t kCopyId = 0x000C448D;     // StringId copy assign, thiscall, ret 4
+constexpr uint32_t kAssignId = 0x000129DF;   // StringId assign from another StringId, thiscall, ret 4
 
 constexpr uint32_t kMenuItemCtor = 0x001EFB52;
 constexpr uint32_t kReserve = 0x000166F7;    // grow a menu container (rows or children)
@@ -82,13 +83,19 @@ constexpr uint32_t kIntInput = 0x001F0292;
 constexpr uint32_t kInputTest = 0x001EE6DB;  // (controller bits, direction, pad state, out) -> pressed
 constexpr uint32_t kSetText = 0x001E9583;    // text element: use this text id, thiscall, ret 4
 constexpr uint32_t kMoveSound = 0x001E917C;
+constexpr uint32_t kSetSelected = 0x001EF329;  // Menu: select row (highlight, selection-changed delegate), ret 4
+constexpr uint32_t kRowHighlight = 0x001E8E4F; // row: draw selected (focus style) or not (0), thiscall, ret 4
 constexpr uint32_t kButtonOn = 0x001EEEC1;   // ButtonBar::Enable(index), thiscall, ret 4
 constexpr uint32_t kButtonOff = 0x001EEEF2;  // ButtonBar::Disable(index), thiscall, ret 4
 constexpr uint32_t kOriginalBack = 0x000F68E3;  // through our hook, which lets it pass once s_live is clear
+constexpr uint32_t kOpenPage = 0x000EBB03;   // page manager: open the page with this element name, thiscall, ret 4
 
 // menu fields (mouse_menus.cpp has the same list)
 constexpr uint32_t kMenuCount = 0x58, kMenuRows = 0x5C, kMenuFirst = 0x60, kMenuShown = 0x64, kMenuPicked = 0x68;
 constexpr uint32_t kRowOn = 0x54, kRowText = 0x58, kRowInput = 0x24;
+// a row's comment (StringId, set by the MenuItem base ctor 0xEC65B): the options screen's update (front end
+// 0xEA0B0) shows the selected row's comment in its description line whenever it is not empty
+constexpr uint32_t kRowComment = 0x4C;
 constexpr uint32_t kBoolState = 0x68;
 constexpr uint32_t kIntValue = 0x64;
 
@@ -180,6 +187,7 @@ bool s_ready = false;   // rows built, original rows saved
 bool s_live = false;    // the page is open
 bool s_dirty = false;   // a value changed since the page opened (or the last Apply)
 bool s_pending = false; // the page was asked for: snapshot it on the next update
+uint64_t s_input_at = 0; // when the page's menu last took input (it does each frame while the page is up)
 Page s_page = kPageTop;
 
 uint32_t s_orig_count = 0, s_orig_first = 0, s_orig_shown = 0, s_orig_picked = 0;
@@ -203,16 +211,16 @@ uint32_t s_revert_w = 0, s_revert_h = 0;
 uint64_t s_revert_at = 0;
 long s_revert_left = -1;
 
-// the page heading and the description line (pool strings the page data draws)
-uint32_t s_pool_title = 0, s_pool_desc = 0;
+// the page heading (a pool string the page data draws)
+uint32_t s_pool_title = 0;
 char s_pool_title_orig[16] = {};
-char s_pool_desc_orig[40] = {};
-int s_help_opt = -999;
+uint32_t s_count_ids[16] = {};  // "Going back in N s." comments for the keep page, N 0..15
 
 // fixed guest memory for our texts and ids: allocated once with the game's own allocator
 uint32_t s_strings = 0, s_strings_at = 0;
 uint32_t s_ids = 0, s_ids_at = 0;
 uint32_t s_temp_id = 0;  // scratch StringId for choice row values
+uint32_t s_page_id = 0;  // StringId "xbox_live_options": the page, opened by name from the pause menu
 uint32_t s_choice_text[kOptCount][64] = {};  // "~VALUE" text ids for the choice rows
 
 bool ReadyForText() { return s_strings && s_ids; }
@@ -259,6 +267,9 @@ bool RowIn(Page page, uint32_t row, int& opt) {
         }
     return false;
 }
+
+// a slider's step: percentages go by 5, as in the F1 menu
+uint32_t Step(int opt) { return opt == kRender || opt == kReticle || opt == kMouseSens ? 5 : 1; }
 
 uint32_t CapIndex(uint32_t raw) {
     for (int i = 0; i < 7; i++)
@@ -446,6 +457,20 @@ void SetChoiceRow(int opt, uint32_t row) {
             if (r.opt == opt) r.row = row;
 }
 
+const char* HelpFor(int opt, Page page);
+
+void SetComment(X86Context& ctx, uint32_t row, uint32_t id) {
+    if (!row || !id) return;
+    ctx.ecx = row + kRowComment;
+    kernel::CallGuest(ctx, kAssignId, {id});
+}
+
+// the row's help line under the list
+void Help(X86Context& ctx, uint32_t row, int opt, Page page) {
+    if (const char* text = HelpFor(opt, page); *text)
+        SetComment(ctx, row, Intern(ctx, (std::string("~") + text).c_str()));
+}
+
 void BuildRows(X86Context& ctx) {
     uint32_t menu = s_menu;
     if (!menu) return;
@@ -467,6 +492,7 @@ void BuildRows(X86Context& ctx) {
         if (!row) return;
         Write8(row + kRowOn, 0);
         CopyFont(row, peer);
+        Help(ctx, row, opt, page);
         s_pages[page].push_back({opt, row});
     };
 
@@ -475,11 +501,13 @@ void BuildRows(X86Context& ctx) {
         const uint32_t count = ChoiceCount(opt);
         s_choice_rows[opt].clear();
         uint32_t link = Intern(ctx, "pc_choice");
+        uint32_t help = Intern(ctx, (std::string("~") + HelpFor(opt, kPageTop)).c_str());
         for (uint32_t i = 0; i < count; i++) {
             uint32_t row = MenuItem(ctx, s_choice_text[opt][i] ? s_choice_text[opt][i] : Intern(ctx, d.label), link);
             if (!row) continue;
             Write8(row + kRowOn, 0);
             CopyFont(row, peer);
+            SetComment(ctx, row, help);
             s_choice_rows[opt].push_back(row);
         }
     };
@@ -510,6 +538,7 @@ void BuildRows(X86Context& ctx) {
             CopyFont(row, peer);
             ctx.ecx = row;
             kernel::CallGuest(ctx, kBoolSet, {v.v[opt] != 0, 0});
+            Help(ctx, row, opt, page);
             s_pages[page].push_back({opt, row});
         } else {
             uint32_t cb = Alloc(ctx, 0x28);
@@ -524,12 +553,12 @@ void BuildRows(X86Context& ctx) {
             uint32_t value = std::clamp<int>(int(v.v[opt]), d.lo, d.hi);
             ctx.ecx = row;
             kernel::CallGuest(ctx, kIntSet, {value, 0});
+            Help(ctx, row, opt, page);
             s_pages[page].push_back({opt, row});
         }
     };
 
-    // top page
-    header(kPageTop, "~PC SETTINGS");
+    // top page (no header row: the page heading already says PC SETTINGS)
     action(kPageTop, "~DISPLAY AND GRAPHICS", "pc_open_display", kOpenDisplay);
     action(kPageTop, "~CONTROLS", "pc_open_controls", kOpenControls);
     action(kPageTop, "~GAME", "pc_open_game", kOpenGame);
@@ -588,60 +617,42 @@ void BuildRows(X86Context& ctx) {
     action(kPageKeep, "~GO BACK", "pc_goback", kGoBackMode);
 }
 
-void SetDescription(const char* text) {
-    if (!s_pool_desc) return;
-    size_t n = std::strlen(text);
-    if (n > 36) n = 36;
-    std::memcpy(kernel::g_base + s_pool_desc + 2, text, n);
-    kernel::g_base[s_pool_desc + 2 + n] = 0;
-}
-
-const char* HelpFor(int opt) {
+const char* HelpFor(int opt, Page page) {
     switch (opt) {
-        case kOpenDisplay: return "PICTURE SETTINGS";
-        case kOpenControls: return "INPUT SETTINGS";
-        case kOpenGame: return "GAME SETTINGS";
-        case kKeyBindings: return "KEY SETUP IN F1";
-        case kReport: return "REPORT A PROBLEM";
-        case kApply: return "SAVE THE SETTINGS";
-        case kBack: return s_page == kPageTop ? "BACK TO OPTIONS" : "BACK TO TOP";
-        case kSaveChanges: return "KEEP THE CHANGES";
-        case kDiscardChanges: return "UNDO THE CHANGES";
-        case kKeepMode: return "STAY IN THIS MODE";
-        case kGoBackMode: return "USE THE OLD MODE";
-        case kDisplayMode: return "SCREEN OR WINDOW";
-        case kResolution: return "SCREEN RESOLUTION";
-        case kRender: return "SHARPER OR FASTER";
-        case kFps: return "FRAME RATE CAP";
-        case kVsync: return "LESS SCREEN TEAR";
-        case kPs2: return "PS2 ALPHA EFFECT";
-        case kAniso: return "SHARPER TEXTURES";
-        case kMsaa: return "SMOOTH EDGES";
-        case kPrecompile: return "FEWER STUTTERS";
-        case kFov: return "VIEW WIDTH";
-        case kWeaponFov: return "GUN VIEW WIDTH";
-        case kWide: return "WIDER SIDE VIEW";
-        case kReticle: return "CROSSHAIR SIZE";
-        case kBorders: return "CUT-SCENE BARS";
-        case kPrompts: return "BUTTON PICTURES";
-        case kKeyboard: return "KEYS AND MOUSE";
-        case kMouseLook: return "MOUSE TURNS VIEW";
-        case kMouseSens: return "MOUSE SPEED";
-        case kMouseDirect: return "MOUSE AIMING";
-        case kMouseMenus: return "MOUSE IN MENUS";
-        case kShowFps: return "SHOW FRAME RATE";
-        case kBonus: return "UNLOCKED CONTENT";
+        case kOpenDisplay: return "Display mode, resolution and picture.";
+        case kOpenControls: return "Keyboard, mouse and button prompts.";
+        case kOpenGame: return "Frame rate counter and extra content.";
+        case kKeyBindings: return "Change the keys (opens the F1 menu).";
+        case kReport: return "Send a bug report with the game's log.";
+        case kApply: return "Use and save the display settings.";
+        case kBack: return page == kPageTop ? "Back to the options." : "Back to PC settings.";
+        case kSaveChanges: return "Keep and save the changes.";
+        case kDiscardChanges: return "Undo the changes made here.";
+        case kKeepMode: return "Keep this display mode.";
+        case kGoBackMode: return "Go back to the previous display mode.";
+        case kDisplayMode: return "Fullscreen, borderless or a window.";
+        case kResolution: return "Screen size. Use Apply Changes.";
+        case kRender: return "Lower is faster, higher is sharper.";
+        case kFps: return "Highest frame rate the game runs at.";
+        case kVsync: return "Stops tearing; can add input lag.";
+        case kPs2: return "No haze ghosting, like the PS2 port.";
+        case kAniso: return "Sharper textures at an angle.";
+        case kMsaa: return "Smoother edges; costs speed.";
+        case kPrecompile: return "Fewer stutters after a driver update.";
+        case kFov: return "Degrees across 4:3. Lowest: the game's (55).";
+        case kWeaponFov: return "How wide the gun view is.";
+        case kWide: return "Show more at the sides on wide screens.";
+        case kReticle: return "Size of the aiming reticle.";
+        case kBorders: return "Black bars in the cut-scenes.";
+        case kPrompts: return "Which buttons the hints show.";
+        case kKeyboard: return "Play with the keyboard and mouse.";
+        case kMouseLook: return "The mouse turns the view.";
+        case kMouseSens: return "How fast the mouse turns the view.";
+        case kMouseDirect: return "The mouse aims directly, on foot.";
+        case kMouseMenus: return "Point and click in the menus.";
+        case kShowFps: return "Show the frame rate on screen.";
+        case kBonus: return "War Train and Splitter. At the next start.";
         default: return "";
-    }
-}
-
-void UpdateHelp() {
-    if (s_page == kPageKeep) return;
-    uint32_t row = Selected(s_menu);
-    int opt = 0;
-    if (row && RowIn(s_page, row, opt) && opt != s_help_opt) {
-        s_help_opt = opt;
-        SetDescription(HelpFor(opt));
     }
 }
 
@@ -671,8 +682,17 @@ void ShowPage(X86Context& ctx, Page page, bool reset) {
     // headers draw but are not pickable: menu input skips rows with +0x54 clear
     for (const RowRef& r : refs)
         if (r.opt == kHeader) Write8(r.row + kRowOn, 0);
-    s_help_opt = -999;
-    UpdateHelp();
+    // select the row the game's way: it highlights it and tells the screen, which shows the row's comment. A row
+    // keeps the look it had when last shown, so the others are drawn unselected first.
+    if (!rows.empty()) {
+        for (size_t i = 0; i < rows.size(); i++) {
+            if (i == picked) continue;
+            ctx.ecx = rows[i];
+            kernel::CallGuest(ctx, kRowHighlight, {0});
+        }
+        ctx.ecx = menu;
+        kernel::CallGuest(ctx, kSetSelected, {picked});
+    }
 }
 
 void RestoreOriginal(X86Context& ctx) {
@@ -702,28 +722,14 @@ uint32_t FindPool(const char* text, size_t n) {
     return 0;
 }
 
+// the description line shows the selected row's comment (kRowComment), set on every row by BuildRows
 void PatchHeading(X86Context& ctx) {
-    // the page's description line is the Xbox Live page's own comment ("Choose to appear Online or Offline."),
-    // a pool string; use its room for the selected row's help. menu_hooks.cpp renamed the Xbox Live row text to
-    // PC SETTINGS, so that string is only the fallback.
-    if (!s_pool_desc) {
-        uint32_t d = FindPool("Choose to appear Online or Offline.", sizeof("Choose to appear Online or Offline."));
-        if (!d) d = FindPool("PC SETTINGS", sizeof("PC SETTINGS"));
-        if (d) {
-            s_pool_desc = d;
-            std::memcpy(s_pool_desc_orig, kernel::g_base + d + 2, sizeof(s_pool_desc_orig));
-            LOGR("settings page: description pool string (%08X: %s)", d,
-                 reinterpret_cast<const char*>(kernel::g_base + d + 2));
-        }
-    }
     if (uint32_t t = FindPool("Xbox Live", sizeof("Xbox Live"))) {
         s_pool_title = t;
         std::memcpy(s_pool_title_orig, kernel::g_base + t + 2, sizeof(s_pool_title_orig));
         std::memcpy(kernel::g_base + t + 2, "PC SETTINGS", sizeof("PC SETTINGS"));
         LOGR("settings page: heading pool string renamed (%08X)", t);
     }
-    s_help_opt = -999;
-    UpdateHelp();
     (void)ctx;
 }
 
@@ -731,10 +737,6 @@ void RestoreHeading() {
     if (s_pool_title) {
         std::memcpy(kernel::g_base + s_pool_title + 2, s_pool_title_orig, sizeof(s_pool_title_orig));
         s_pool_title = 0;
-    }
-    if (s_pool_desc) {
-        std::memcpy(kernel::g_base + s_pool_desc + 2, s_pool_desc_orig, sizeof(s_pool_desc_orig));
-        s_pool_desc = 0;
     }
 }
 
@@ -849,7 +851,6 @@ void ApplyAll(X86Context& ctx, bool leave_after) {
     app::Save();
     s_snapshot = v;
     s_dirty = false;
-    s_help_opt = -999;
     LOGR("settings page: applied");
     if (display_changed) {
         s_keep = true;
@@ -865,8 +866,13 @@ void ApplyAll(X86Context& ctx, bool leave_after) {
 }
 
 void Discard(X86Context& ctx) {
+    const app::Settings& s = app::Get();
+    const app::Mode was = ResMode(s_snapshot.v[kResolution]);
+    // the display is only applied by APPLY CHANGES, which takes a new snapshot: it changed only through F1 meanwhile
+    const bool display_changed = uint32_t(s.display_mode) != s_snapshot.v[kDisplayMode] || s.width != was.width ||
+                                 s.height != was.height;
     WriteValues(s_snapshot);
-    app::ApplyDisplay();
+    if (display_changed) app::ApplyDisplay();
     s_pending_mode = app::DisplayMode(std::min<uint32_t>(s_snapshot.v[kDisplayMode], 2));
     s_pending_w = ResMode(s_snapshot.v[kResolution]).width;
     s_pending_h = ResMode(s_snapshot.v[kResolution]).height;
@@ -881,7 +887,6 @@ void Leave(X86Context& ctx) {
     s_live = false;
     s_keep = false;
     s_page = kPageTop;
-    s_help_opt = -999;
     ctx.ecx = s_handler;
     kernel::CallGuest(ctx, kOriginalBack, {0});  // s_live is clear: our hook passes it to the game's back
 }
@@ -972,7 +977,7 @@ bool Press(X86Context& ctx, uint32_t handler) {
     } else if (d.kind == kInt) {
         uint32_t value = kernel::R32(row + kIntValue);
         if (value < uint32_t(d.hi))
-            value++;
+            value = std::min<uint32_t>(value + Step(opt), uint32_t(d.hi));
         else
             value = uint32_t(d.lo);
         ctx.ecx = row;
@@ -1035,7 +1040,13 @@ void Construct(X86Context& ctx) {
     }
     LOGR("settings page: guest text %08X ids %08X", s_strings, s_ids);
     s_strings_at = s_ids_at = 0;
-    s_pool_title = s_pool_desc = 0;
+    s_page_id = Intern(ctx, "xbox_live_options");
+    s_pool_title = 0;
+    for (int n = 0; n < 16; n++) {
+        char line[32];
+        std::snprintf(line, sizeof(line), "~Going back in %d s.", n);
+        s_count_ids[n] = Intern(ctx, line);
+    }
     std::memset(s_choice_text, 0, sizeof(s_choice_text));
     for (int opt = 0; opt < kOptCount; opt++) s_choice_rows[opt].clear();
     s_pending_mode = app::Get().display_mode;
@@ -1057,7 +1068,8 @@ void Construct(X86Context& ctx) {
         const uint32_t count = std::min<uint32_t>(ChoiceCount(opt), 63);
         for (uint32_t i = 0; i < count; i++) {
             char line[128];
-            std::snprintf(line, sizeof(line), "~%s: %s", d.label, ChoiceName(opt, i));
+            // the game's font has no < and >: the value row arrows of the game's widgets are images
+            std::snprintf(line, sizeof(line), "~%s:  %s", d.label, ChoiceName(opt, i));
             s_choice_text[opt][i] = Intern(ctx, line);
         }
     }
@@ -1079,6 +1091,7 @@ void Opening(X86Context& ctx) {
     s_pending_w = s.width;
     s_pending_h = s.height;
     const Values snapshot = ReadValues();
+    s_input_at = GetTickCount64();
     if (s_ready) {
         // Only take the snapshot here: the page is being opened by the game's own select handler and the menu
         // must not be reshaped under it. The next update puts our rows up, before the page is drawn.
@@ -1087,12 +1100,29 @@ void Opening(X86Context& ctx) {
         s_keep = false;
         s_live = true;
         s_page = kPageTop;
-        s_help_opt = -999;
     }
     s_pending = true;
 }
 
+// The pause menu's select handler checks the Xbox Live sign-in before it opens this row's page, and shows the
+// sign-in flow when signed out (always, here). Open the page ourselves instead, by its element name, through the
+// same page manager (handler +8) the game's own open uses. False when our page is not built in that menu.
+bool OpenFromPause(X86Context& ctx, uint32_t pages) {
+    if (!s_ready || !s_handler || !pages || kernel::R32(s_handler + 8) != pages) {
+        LOGR("settings page: pause open skipped (ready %d, pages %08X, ours %08X)", s_ready, pages,
+             s_handler ? kernel::R32(s_handler + 8) : 0);
+        return false;
+    }
+    if (!s_page_id) return false;
+    Opening(ctx);
+    ctx.ecx = pages;
+    kernel::CallGuest(ctx, kOpenPage, {s_page_id});
+    LOGR("settings page: opened from the pause menu");
+    return true;
+}
+
 void EnableSelect(X86Context& ctx);
+void Tick(X86Context& ctx);
 
 // The page handler's update. Returns 0 for another handler, 1 when ours has been updated and 2 when the page has
 // just been opened: the caller then runs the game's own update once (it enables the page's button prompts) before
@@ -1110,14 +1140,22 @@ int Update(X86Context& ctx) {
         s_live = true;
         s_page = kPageTop;
         s_pending = false;
-        s_help_opt = -999;
         LOGR("settings page: update opening");
         return 2;
     }
     if (!s_live) return 1;
+    if (s_page != kPageKeep) SyncRows(ctx);
+    Tick(ctx);
+    return 1;
+}
+
+// Every frame the page is up (the menu's input runs each frame; the page handler's update does not): the keep page
+// counts down and goes back by itself, and the SELECT prompt stays shown.
+void Tick(X86Context& ctx) {
+    if (!s_live) return;
     if (s_page == kPageKeep) {
-        const long left = long((s_revert_at - GetTickCount64()) / 1000);
-        if (GetTickCount64() >= s_revert_at) {
+        const uint64_t now = GetTickCount64();
+        if (now >= s_revert_at) {
             RevertDisplay(ctx);
             if (s_leave_after_keep) {
                 s_leave_after_keep = false;
@@ -1125,20 +1163,20 @@ int Update(X86Context& ctx) {
             } else {
                 ShowPage(ctx, kPageTop, true);
             }
-            return 1;
+            return;
         }
+        const long left = long((s_revert_at - now + 999) / 1000);
         if (left != s_revert_left) {
             s_revert_left = left;
-            char line[24];
-            std::snprintf(line, sizeof(line), "GOING BACK: %ld S", left < 0 ? 0 : left);
-            SetDescription(line);
+            const uint32_t id = s_count_ids[std::clamp<long>(left, 0, 15)];
+            for (const RowRef& r : s_pages[kPageKeep])
+                if (r.opt != kHeader) SetComment(ctx, r.row, id);
+            // the screen shows a comment when the selection changes: select the same row again
+            ctx.ecx = s_menu;
+            kernel::CallGuest(ctx, kSetSelected, {kernel::R32(s_menu + kMenuPicked)});
         }
-    } else {
-        UpdateHelp();
-        SyncRows(ctx);
     }
     EnableSelect(ctx);
-    return 1;
 }
 
 // The page's button bar has the SELECT prompt (entry 4) but the Xbox Live page data leaves it hidden. Show it
@@ -1154,6 +1192,7 @@ void EnableSelect(X86Context& ctx) {
 // after the game's own first update: our rows up, heading renamed
 void Opened(X86Context& ctx) {
     if (!s_live) return;
+    s_input_at = GetTickCount64();
     ShowPage(ctx, kPageTop, true);
     PatchHeading(ctx);
     EnableSelect(ctx);
@@ -1191,7 +1230,10 @@ bool BackHandler(X86Context& ctx, uint32_t handler) {
 // pad, and the pad state the game passes in is not a plain held mask), with the guest's own direction test as a
 // fallback; the game's widgets get no input, so a slider steps once and then repeats.
 void MenuInput(X86Context& ctx, uint32_t menu) {
-    if (!s_ready || menu != s_menu || !s_live || s_page >= kPageSave) return;
+    if (!s_ready || menu != s_menu || !s_live) return;
+    s_input_at = GetTickCount64();
+    Tick(ctx);
+    if (!s_live || s_page >= kPageSave) return;
     uint32_t row = Selected(menu);
     int opt = 0;
     if (!row || !RowIn(s_page, row, opt) || opt < 0) return;
@@ -1201,8 +1243,12 @@ void MenuInput(X86Context& ctx, uint32_t menu) {
     static bool s_left_down = false, s_right_down = false;
     static uint64_t s_left_at = 0, s_right_at = 0;
     const uint64_t now = GetTickCount64();
-    const bool lnow = (GetAsyncKeyState(VK_LEFT) & 0x8000) != 0;
-    const bool rnow = (GetAsyncKeyState(VK_RIGHT) & 0x8000) != 0;
+    // the keys are read only while the game's window has the focus
+    DWORD fg_pid = 0;
+    GetWindowThreadProcessId(GetForegroundWindow(), &fg_pid);
+    const bool focused = fg_pid == GetCurrentProcessId();
+    const bool lnow = focused && (GetAsyncKeyState(VK_LEFT) & 0x8000) != 0;
+    const bool rnow = focused && (GetAsyncKeyState(VK_RIGHT) & 0x8000) != 0;
     bool left = false, right = false;
     if (lnow && (!s_left_down || now >= s_left_at)) {
         left = true;
@@ -1242,13 +1288,35 @@ void MenuInput(X86Context& ctx, uint32_t menu) {
     }
     uint32_t value = kernel::R32(row + kIntValue);
     const uint32_t before = value;
-    if (right && value < uint32_t(d.hi)) value++;
-    else if (left && value > uint32_t(d.lo)) value--;
+    const uint32_t step = Step(opt);
+    // to the next multiple of the step, so an odd value from settings.toml lines up again
+    if (right && value < uint32_t(d.hi)) value = std::min<uint32_t>((value / step + 1) * step, uint32_t(d.hi));
+    else if (left && value > uint32_t(d.lo)) value = std::max<uint32_t>(((value + step - 1) / step - 1) * step, uint32_t(d.lo));
     if (value != before) {
         ctx.ecx = row;
         kernel::CallGuest(ctx, kIntSet, {value, 1});
         ApplyOne(ctx, opt);
     }
+}
+
+// game thread, from the player's view update (pc_hooks.cpp), which does not run while the game is paused: the pause
+// menu was closed with our page up. Its handler stays (Destroying is not called), so leave the page here: unapplied
+// changes are discarded and an unconfirmed display mode goes back, as with B.
+void Playing(X86Context& ctx) {
+    // the view update still runs for a frame or two after the pause menu opens: only once the page's menu has had
+    // no input for a moment is it really gone
+    if (!s_ready || !s_live || GetTickCount64() - s_input_at < 300) return;
+    const uint32_t regs[8] = {ctx.eax, ctx.ecx, ctx.edx, ctx.ebx, ctx.esp, ctx.ebp, ctx.esi, ctx.edi};
+    LOGR("settings page: the game went on with the page open (%s)", s_dirty ? "discarding changes" : "no changes");
+    if (s_page == kPageKeep) RevertDisplay(ctx);
+    if (s_dirty) Discard(ctx);
+    RestoreHeading();
+    s_live = false;
+    s_keep = false;
+    s_leave_after_keep = false;
+    s_page = kPageTop;
+    ctx.eax = regs[0], ctx.ecx = regs[1], ctx.edx = regs[2], ctx.ebx = regs[3];
+    ctx.esp = regs[4], ctx.ebp = regs[5], ctx.esi = regs[6], ctx.edi = regs[7];
 }
 
 // the page handler is going away (the pause menu was closed, or the front end left): unapplied changes are

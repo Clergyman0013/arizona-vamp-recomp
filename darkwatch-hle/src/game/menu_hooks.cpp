@@ -27,6 +27,7 @@ void OpenFromGame();
 
 namespace settings_menu {
 void Opening(X86Context& ctx);  // src/game/settings_menu.cpp
+bool OpenFromPause(X86Context& ctx, uint32_t pages);
 }
 
 namespace coop {
@@ -92,16 +93,15 @@ void Patch() {
 
 }  // namespace game_menu
 
-// the pause menu's select (A) handler, thiscall (this: the page's handler, +4 its menu; 1 arg): PC SETTINGS is the
-// Xbox Live options page, renamed in place; the game opens its link as for any other page, and settings_menu.cpp
-// has put our rows there. Tell it when the page is asked for, so it can take the values from the settings file.
+// the pause menu's select (A) handler, thiscall (this: the page's handler, +4 its menu, +8 the page manager; 1 arg):
+// PC SETTINGS is the Xbox Live options row, renamed in place. For it the game checks the Xbox Live sign-in first and
+// starts the sign-in flow when signed out; settings_menu.cpp opens the page itself instead, with our rows on it.
 X86_EXTERN_FUNC(__imp__sub_000F64B3);
 X86_FUNC(sub_000F64B3) {
     uint32_t item = game_menu::Selected(kernel::R32(ctx.ecx + 4));
     if (item && kernel::g_base[item + 0x54] && game_menu::Named(item, "XBL_XboxLiveOptions")) {
-        // the pause menu's xbox_live_options page is the Xbox Live sign-in page, not an options page, so the
-        // native PC SETTINGS page cannot live there; open the F1 overlay on its Display page instead
-        menu::OpenFromGame();
+        // the F1 overlay when our page is not built in this menu
+        if (!settings_menu::OpenFromPause(ctx, kernel::R32(ctx.ecx + 8))) menu::OpenFromGame();
         kernel::Return(ctx, 0, 1);
         return;
     }

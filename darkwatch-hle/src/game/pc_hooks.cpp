@@ -30,6 +30,10 @@ namespace mouse_menus {
 void Playing();  // mouse_menus.cpp: the player's view turned, so no menu has the mouse
 }
 
+namespace settings_menu {
+void Playing(X86Context& ctx);  // settings_menu.cpp: the pause menu closed with PC SETTINGS up, leave it
+}
+
 namespace {
 
 float F32(uint32_t va) {
@@ -180,6 +184,7 @@ std::atomic<uint64_t> s_aimed{0};
 X86_EXTERN_FUNC(__imp__sub_000A2725);
 X86_FUNC(sub_000A2725) {
     mouse_menus::Playing();
+    settings_menu::Playing(ctx);
     uint32_t look = ctx.ecx, ch = kernel::R32(look + 0x40);
     // which movement controller turns the view, logged once each
     static uint32_t s_seen[4];
