@@ -79,7 +79,7 @@ Logs
 ----
   logs\                       the game's log, and compile.log from the
                               first start's build
-  CrashDumps\Darkwatch.*.dmp  written when it crashes
+  CrashDumps\Darkwatch.*.dmp  written when it crashes, with the log of that run beside it (.log)
 Both folders are created beside Darkwatch.exe. Send the newest log, and the
 .dmp if there is one. Logs can hold your Windows user name in file paths:
 edit it out if you prefer.
