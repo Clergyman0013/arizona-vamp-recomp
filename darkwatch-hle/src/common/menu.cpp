@@ -57,12 +57,12 @@ namespace menu {
 bool g_show_fps = false;  // settings file: show_fps
 bool g_ps2_alpha = false;  // settings file: ps2_alpha
 // the game-side options (src/game/pc_hooks.cpp), settings file names in game_info.cpp
-uint32_t g_fov = 0;         // fov: degrees across a 4:3 frame, 0 the game's 55
+uint32_t g_fov = 80;        // fov: degrees across a 4:3 frame, 0 the game's 55
 uint32_t g_weapon_fov = 0;  // weapon_fov: the same for the first-person arms and gun
 bool g_widescreen = true;   // widescreen_fov
 bool g_mouse_direct = true;  // mouse_direct_aim
 uint32_t g_reticle = 100;    // reticle_size, percent
-bool g_cutscene_borders = true;  // cutscene_borders
+bool g_cutscene_borders = false;  // cutscene_borders
 
 namespace {
 

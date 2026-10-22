@@ -60,9 +60,9 @@ Day-to-day progress, findings and open bugs are in [STATUS.md](STATUS.md).
 in the pause menu or the main menu's OPTIONS (it replaces the Xbox Live entry).
 - **Display:** fullscreen / borderless / windowed, resolution, render resolution 25-200%, frame-rate cap, V-Sync.
   A new display mode asks to be kept and goes back after 15 seconds.
-- **Graphics:** **MSAA anti-aliasing (2x / 4x / 8x)**, field of view and a separate weapon field of view,
-  widescreen framing (a wide screen shows more at the sides instead of a stretched 4:3 picture), reticle size,
-  in-level cut-scene borders on or off, anisotropic filtering (16x by default), optional *PS2 alpha blending*
+- **Graphics:** **MSAA anti-aliasing (2x / 4x / 8x)**, field of view (80 by default; the game's is 55) and a
+  separate weapon field of view, widescreen framing (a wide screen shows more at the sides instead of a stretched
+  4:3 picture; on by default), reticle size, in-level cut-scene borders (off by default), anisotropic filtering (16x by default), optional *PS2 alpha blending*
   (removes the previous-frame ghosting that the Xbox version has).
 - **Controls:** button prompts (the controller in use, or Xbox / PlayStation / Switch), keyboard and mouse on or
   off, mouse look and sensitivity, direct mouse aiming, mouse in the game's menus, key rebinding.
