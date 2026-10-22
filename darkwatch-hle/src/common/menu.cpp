@@ -447,13 +447,14 @@ void PollBind() {
 void PageControls() {
     app::Settings& s = app::Get();
     Row("Button prompts");
-    const char* kPrompts[] = {"Controller in use", "Xbox", "PlayStation", "Switch"};
-    int style = int(std::min<uint32_t>(prompts::g_style, 3));
-    if (ImGui::Combo("##prompts", &style, kPrompts, 4)) {
+    const char* kPrompts[] = {"Controller in use", "Xbox", "PlayStation", "Switch", "Keyboard and mouse"};
+    int style = int(std::min<uint32_t>(prompts::g_style, 4));
+    if (ImGui::Combo("##prompts", &style, kPrompts, 5)) {
         prompts::g_style = uint32_t(style);
         s_dirty = true;
     }
-    Hint("The buttons the game's prompts show. Controller in use: PlayStation or Switch pictures for those pads, Xbox for the rest and for the keyboard.");
+    Hint("The buttons the game's prompts show. Controller in use: PlayStation or Switch pictures for those pads, the "
+         "bound keys and mouse buttons while the keyboard or mouse was used last, Xbox for the rest.");
     ImGui::Spacing();
     Row("Keyboard and mouse");
     if (ImGui::Checkbox("##kb", &s.keyboard)) s_dirty = true;

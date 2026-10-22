@@ -210,10 +210,10 @@ index d3519d5..f2382f7 100644
  
 diff --git a/runtime/app/game_code.cpp b/runtime/app/game_code.cpp
 new file mode 100644
-index 0000000..0582ed9
+index 0000000..33b750d
 --- /dev/null
 +++ b/runtime/app/game_code.cpp
-@@ -0,0 +1,755 @@
+@@ -0,0 +1,727 @@
 +// The recompiled game code is built on the player's PC, so a release carries none of it: xbe_recomp translates each
 +// xbe of GameInfo::images to C++, clang compiles that and lld links it into <exe>.dll beside the executables, all from
 +// the compiler folder. The first start does this behind a progress window. Finished objects are kept, so a closed window
@@ -293,8 +293,8 @@ index 0000000..0582ed9
 +std::wstring g_failure;  // the step that failed, written by the build thread before it ends
 +HWND g_window = nullptr;
 +bool g_start = false;  // the player picked Start once the game was ready
-+bool g_delete_compiler = false;  // ticked on the ready page
-+uint64_t g_compiler_bytes = 0;
++int64_t g_ready_at = 0;  // ms the build finished; the game starts by itself kAutoStartMs later
++constexpr int64_t kAutoStartMs = 10000;
 +constexpr UINT kBuildDone = WM_APP + 1;
 +
 +int64_t NowMs() {
@@ -659,8 +659,10 @@ index 0000000..0582ed9
 +                   std::to_wstring(g_progress.files_total);
 +        case Stage::Linking:
 +            return L"Linking the game's code";
-+        default:
-+            return L"Start the game now?";
++        default: {
++            int64_t left = g_ready_at ? (g_ready_at + kAutoStartMs - NowMs() + 999) / 1000 : kAutoStartMs / 1000;
++            return L"Starting in " + std::to_wstring(std::max<int64_t>(left, 0)) + L" s, or press Start now";
++        }
 +    }
 +}
 +
@@ -706,7 +708,6 @@ index 0000000..0582ed9
 +    RECT bottom;
 +    RECT start;
 +    RECT exit;
-+    RECT delete_toggle;
 +};
 +
 +Layout Arrange(const RECT& client, int unit) {
@@ -718,25 +719,15 @@ index 0000000..0582ed9
 +    l.bottom = {l.bar.left, l.bar.bottom + unit / 2, l.bar.right, l.bar.bottom + unit / 2 + unit * 2};
 +    l.exit = {l.bottom.right - unit * 8, l.bottom.top, l.bottom.right, l.bottom.bottom};
 +    l.start = {l.exit.left - unit * 9, l.bottom.top, l.exit.left - unit, l.bottom.bottom};
-+    l.delete_toggle = {l.bottom.left, l.bottom.top, l.start.left - unit, l.bottom.bottom};
 +    return l;
 +}
 +
 +// the ready page's buttons, with the controller button that presses each
-+void PaintChoices(HDC dc, const Layout& l, int unit) {
++void PaintChoices(HDC dc, const Layout& l) {
 +    FillBox(dc, l.start, kBarFull);
 +    DrawLine(dc, l.start, L"Start (A)", kBackground, DT_CENTER);
 +    FillBox(dc, l.exit, kBarEmpty);
 +    DrawLine(dc, l.exit, L"Exit (B)", kText, DT_CENTER);
-+    int middle = (l.delete_toggle.top + l.delete_toggle.bottom) / 2;
-+    RECT box{l.delete_toggle.left, middle - unit / 2, l.delete_toggle.left + unit, middle + unit / 2};
-+    FillBox(dc, box, kBarEmpty);
-+    if (g_delete_compiler) InflateRect(&box, -unit / 4, -unit / 4);
-+    if (g_delete_compiler) FillBox(dc, box, kBarFull);
-+    RECT label = l.delete_toggle;
-+    label.left += unit * 3 / 2;
-+    std::wstring megabytes = std::to_wstring(g_compiler_bytes >> 20);
-+    DrawLine(dc, label, L"Delete the compiler files, " + megabytes + L" MB (X)", kText, DT_LEFT);
 +}
 +
 +void Paint(HDC dc, const RECT& client, int unit) {
@@ -752,7 +743,7 @@ index 0000000..0582ed9
 +    filled.right = l.bar.left + LONG(float(l.bar.right - l.bar.left) * Fraction());
 +    FillBox(dc, filled, kBarFull);
 +    if (ready) {
-+        PaintChoices(dc, l, unit);
++        PaintChoices(dc, l);
 +        return;
 +    }
 +    DrawLine(dc, l.bottom, std::to_wstring(int(Fraction() * 100.0f)) + L"%", kDim, DT_LEFT);
@@ -780,31 +771,13 @@ index 0000000..0582ed9
 +    EndPaint(hwnd, &ps);
 +}
 +
-+// what the compiler folder holds, shown beside the delete box
-+uint64_t CompilerBytes() {
-+    uint64_t bytes = 0;
-+    std::error_code ec;
-+    for (auto& e : fs::recursive_directory_iterator(CompilerDir(), ec))
-+        if (e.is_regular_file(ec)) bytes += e.file_size(ec);
-+    return bytes;
-+}
-+
-+// the game runs from the DLLs alone; a later release brings the compiler again
-+void DeleteCompiler() {
-+    std::error_code ec;
-+    fs::remove_all(CompilerDir(), ec);
-+    if (ec) LOGE("Game code: deleting the compiler folder failed: %s", ec.message().c_str());
-+    else LOGR("Game code: compiler folder deleted");
-+}
-+
 +void CloseWindowWith(HWND hwnd, bool start) {
 +    g_start = start;
-+    if (g_progress.stage == Stage::Ready && g_delete_compiler) DeleteCompiler();
 +    DeleteObject(reinterpret_cast<HFONT>(GetWindowLongPtrW(hwnd, GWLP_USERDATA)));
 +    DestroyWindow(hwnd);
 +}
 +
-+// once ready: Start or Enter starts the game, Exit, Escape or the close button leaves, Space ticks the delete box
++// once ready: Start or Enter starts the game, Exit, Escape or the close button leaves
 +void OnClick(HWND hwnd, LPARAM lp) {
 +    if (g_progress.stage != Stage::Ready) return;
 +    RECT client;
@@ -813,17 +786,15 @@ index 0000000..0582ed9
 +    POINT at{short(LOWORD(lp)), short(HIWORD(lp))};
 +    if (PtInRect(&l.start, at)) CloseWindowWith(hwnd, true);
 +    else if (PtInRect(&l.exit, at)) CloseWindowWith(hwnd, false);
-+    else if (PtInRect(&l.delete_toggle, at)) g_delete_compiler = !g_delete_compiler;
 +}
 +
-+// a controller's A starts, B leaves and X ticks the delete box, once ready; on the press, not the hold
++// a controller's A starts and B leaves, once ready; on the press, not the hold
 +void PollController(HWND hwnd) {
 +    static uint16_t held = 0;
 +    uint16_t now = input::HeldOnAnyController();
 +    uint16_t pressed = now & ~held;
 +    held = now;
 +    if (g_progress.stage != Stage::Ready) return;
-+    if (pressed & XINPUT_GAMEPAD_X) g_delete_compiler = !g_delete_compiler;
 +    if (pressed & XINPUT_GAMEPAD_A) CloseWindowWith(hwnd, true);
 +    else if (pressed & XINPUT_GAMEPAD_B) CloseWindowWith(hwnd, false);
 +}
@@ -839,12 +810,13 @@ index 0000000..0582ed9
 +        case WM_TIMER:
 +            InvalidateRect(hwnd, nullptr, FALSE);
 +            PollController(hwnd);
++            // nobody picked: the game starts by itself, a long build usually finishes with the player away
++            if (ready && g_ready_at && IsWindow(hwnd) && NowMs() - g_ready_at >= kAutoStartMs) CloseWindowWith(hwnd, true);
 +            return 0;
 +        case WM_LBUTTONUP:
 +            OnClick(hwnd, lp);
 +            return 0;
 +        case WM_KEYDOWN:
-+            if (ready && wp == VK_SPACE) g_delete_compiler = !g_delete_compiler;
 +            if (ready && (wp == VK_RETURN || wp == VK_ESCAPE)) CloseWindowWith(hwnd, wp == VK_RETURN);
 +            InvalidateRect(hwnd, nullptr, FALSE);
 +            return 0;
@@ -862,7 +834,7 @@ index 0000000..0582ed9
 +                CloseWindowWith(hwnd, false);  // failed or stopped; ready stays up for the player's pick
 +                return 0;
 +            }
-+            g_compiler_bytes = CompilerBytes();
++            g_ready_at = NowMs();
 +            FlashWindow(hwnd, TRUE);
 +            return 0;
 +    }
@@ -2131,7 +2103,7 @@ index 14a066a..7d63489 100644
 +
  }  // namespace gpu
 diff --git a/runtime/gpu/d3d12.cpp b/runtime/gpu/d3d12.cpp
-index c410f12..ed546d9 100644
+index c410f12..7c15f66 100644
 --- a/runtime/gpu/d3d12.cpp
 +++ b/runtime/gpu/d3d12.cpp
 @@ -13,16 +13,20 @@
@@ -2164,6 +2136,15 @@ index c410f12..ed546d9 100644
      double clear = 0;
      double copy = 0;
      double present = 0;
+@@ -125,7 +131,7 @@ O vs(uint id : SV_VertexID) {
+ float4 psmain(O i) : SV_Target {
+     float4 c = 0;
+     int n = max((int)opts.z, 1);
+-    float2 px = fwidth(i.uv);
++    float2 px = abs(ddx(i.uv)) + abs(ddy(i.uv));  // fwidth, which Wine's d3dcompiler may not have
+     for (int y = 0; y < n; y++)
+         for (int x = 0; x < n; x++) c += img.SampleLevel(ls, i.uv + px * ((float2(x, y) + 0.5) / n - 0.5), 0);
+     c /= n * n;
 @@ -148,6 +154,33 @@ O vs(uint id : SV_VertexID) {
  float psmain(O i) : SV_Depth { return img.SampleLevel(ps, i.uv, 0); }
  )";
@@ -3318,6 +3299,64 @@ index def8fc5..28909fe 100644
  }
  
  using Clock = std::chrono::steady_clock;
+diff --git a/runtime/gpu/shaders.cpp b/runtime/gpu/shaders.cpp
+index 7e67b26..f3cd3e2 100644
+--- a/runtime/gpu/shaders.cpp
++++ b/runtime/gpu/shaders.cpp
+@@ -66,14 +66,21 @@ std::string Common() { return kCommonHead + Hooks().Constants() + kCommonTail; }
+ 
+ // vertex programs
+ 
++// The HLSL here and in the pixel shaders stays within what Wine's d3dcompiler (vkd3d-shader, used under Proton)
++// takes: no 1.#INF literals, only scalar conditions in ?:, no fwidth or reflect. Each failed compile there is a black
++// screen.
+ const char* kVsHelpers = R"(
+-float4 mac_mul(float4 a, float4 b) { return (a == 0 || b == 0) ? (float4)0 : a * b; }
++// zero times anything is zero, infinity included
++float mac_mul1(float a, float b) { return (a == 0 || b == 0) ? 0 : a * b; }
++float4 mac_mul(float4 a, float4 b) {
++    return float4(mac_mul1(a.x, b.x), mac_mul1(a.y, b.y), mac_mul1(a.z, b.z), mac_mul1(a.w, b.w));
++}
+ int mac_arl(float v) { return (int)floor(v + 1e-3); }
+ // magnitude clamped between 1 / 2^64 and 2^64, sign kept
+ float magclamp(float v) { float m = clamp(abs(v), 5.42101e-20, 1.84467e+19); return v < 0 ? -m : m; }
+ float4 ilu_rcp(float v) { return (1.0 / v).xxxx; }
+ float4 ilu_rcc(float v) { return magclamp(1.0 / v).xxxx; }
+-float4 ilu_rsq(float v) { return v == 0 ? (1.#INF).xxxx : (rsqrt(abs(v))).xxxx; }
++float4 ilu_rsq(float v) { return v == 0 ? asfloat(0x7F800000).xxxx : (rsqrt(abs(v))).xxxx; }
+ // 2^floor(v), fraction, 2^v
+ float4 ilu_exp(float v) {
+     float whole = floor(v);
+@@ -82,7 +89,7 @@ float4 ilu_exp(float v) {
+ // exponent, mantissa, log2 of |v|; zero logs to negative infinity
+ float4 ilu_log(float v) {
+     float mag = abs(v), l2 = log2(mag), ex = floor(l2);
+-    return mag == 0 ? float4(-1.#INF, 1, -1.#INF, 1) : float4(ex, mag / exp2(ex), l2, 1);
++    return mag == 0 ? float4(-asfloat(0x7F800000), 1, -asfloat(0x7F800000), 1) : float4(ex, mag / exp2(ex), l2, 1);
+ }
+ // power clamped to 128 less 1/256
+ float4 ilu_lit(float4 s) {
+@@ -467,7 +474,10 @@ std::string TexFetch(const PixelKey& k, int i) {
+ 
+ const char* kPsSbyte = R"(
+ // unorm to byte b, less lo under 128 or hi from 128, over d
+-float3 sbyte(float3 u, float lo, float hi, float d) { float3 b = u * 255; return (b - (b >= 128 ? hi : lo)) / d; }
++float3 sbyte(float3 u, float lo, float hi, float d) {
++    float3 b = u * 255, high = (float3)(b >= 128);
++    return (b - (lo + high * (hi - lo))) / d;
++}
+ )";
+ const char* kPsTail = R"(float4 spreadtap(Texture2D t, SamplerState s, float2 uv, float4 w, float m) {
+     float4 c = 0;
+@@ -784,7 +794,7 @@ std::string FixedVertexHlsl(uint16_t regs, bool pretransformed, uint64_t decode,
+             continue;
+         }
+         // generated coordinates are view space; a transform takes the set with 1 after its last element
+-        std::string c = gen == 1 ? "float4(vn, 1)" : gen == 2 ? "float4(vp, 1)" : gen == 3 ? "float4(reflect(normalize(vp), vn), 1)"
++        std::string c = gen == 1 ? "float4(vn, 1)" : gen == 2 ? "float4(vp, 1)" : gen == 3 ? "float4(normalize(vp) - 2 * dot(vn, normalize(vp)) * vn, 1)"
+                         : size == 1 ? F("float4(%s.x, 1, 0, 0)", in.c_str()) : size == 2 ? F("float4(%s.xy, 1, 0)", in.c_str())
+                         : size == 3 ? F("float4(%s.xyz, 1)", in.c_str()) : in;
+         if (!count) {
 diff --git a/runtime/gpu/texture.cpp b/runtime/gpu/texture.cpp
 index 7c896d3..c759d35 100644
 --- a/runtime/gpu/texture.cpp

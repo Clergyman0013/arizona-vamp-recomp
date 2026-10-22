@@ -71,6 +71,17 @@ menu still needed):
 | General | Pause on focus loss (game + sound) | no |
 | Misc | Custom menu cursor (`cursor.png`) | no |
 
+### Black screen under Proton (2026-10-22, issue #1)
+
+- Under Proton (Sarek, CachyOS, Steam Deck) the game played sound over a black screen. Proton's `D3DCompile` is
+  Wine's, built on vkd3d-shader, and it takes less HLSL than Microsoft's; the same report on the DOA3 recomp was its
+  compiler rejecting `isfinite` and `SV_ClipDistance`. Ours wrote infinity as `1.#INF`, a literal only Microsoft's
+  compiler reads, in the helpers every vertex shader includes, so no vertex shader would build there. The helpers
+  now use `asfloat(0x7F800000)`, and three other risks went the same way: vector conditions in `?:` (`mac_mul`,
+  `sbyte`), `fwidth` in the final blit and `reflect` in fixed function texture generation, each written out with
+  the same result (SDK patch, `runtime/gpu/shaders.cpp`, `d3d12.cpp`). Windows renders as before. Not tested under
+  Proton here; the reporter is asked to test.
+
 ### Short streamed sounds (2026-10-21)
 
 - The horse in THE WRONG TRAIN made no sound. The game asks for it (`HORSE_WAKE01`, from the horse's wake animation)
