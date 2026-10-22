@@ -3413,18 +3413,111 @@ index f636701..e6f0423 100644
      }                                                                                                    \
      static const bool kreg_##name = (::kernel::RegisterExport(ord, #name, kentry_##name), true);         \
 diff --git a/runtime/kernel/files.cpp b/runtime/kernel/files.cpp
-index e34ffbb..6a58f22 100644
+index e34ffbb..4a66854 100644
 --- a/runtime/kernel/files.cpp
 +++ b/runtime/kernel/files.cpp
-@@ -6,6 +6,7 @@
+@@ -1,11 +1,16 @@
+ #include <algorithm>
+ #include <cctype>
+ #include <chrono>
++#include <condition_variable>
+ #include <cstdio>
++#include <deque>
+ #include <filesystem>
  #include <fstream>
  #include <map>
++#include <mutex>
++#include <thread>
  
 +#include "app/app.h"
  #include "kernel/disc.h"
  #include "kernel/kernel.h"
  #include "kernel/exports.h"
-@@ -484,6 +485,7 @@ static uint32_t Transfer(const Args& a, bool write, uint32_t pages) {
+@@ -78,6 +83,7 @@ struct File : Object {
+     size_t next = 0;
+     bool listed = false;
+     bool delete_on_close = false;
++    bool async = false;  // opened without FILE_SYNCHRONOUS_IO_ALERT or _NONALERT
+     std::mutex io;  // threads sharing a handle: seek and transfer stay together
+     File() : Object(ObjType::File) {}
+     ~File() override {
+@@ -296,6 +302,7 @@ uint32_t OpenOnDisc(const Disc::Entry* e, const std::string& name, uint32_t hand
+     f->xbox = Normalize(name);
+     f->entry = e;
+     f->dir = e->dir;
++    f->async = !(options & 0x30);
+     W32(handle_out, NewHandle(f));
+     IoStatus(iosb, kSuccess, 1);
+     LOG_FIRST(400, "open %s", name.c_str());
+@@ -418,6 +425,7 @@ KERNEL_EXPORT(190, NtCreateFile, 9) {
+     f->xbox = Normalize(name);
+     f->fp = fp;
+     f->delete_on_close = options & 0x1000;  // FILE_DELETE_ON_CLOSE
++    f->async = !(options & 0x30);
+     W32(handle_out, NewHandle(f));
+     IoStatus(iosb, kSuccess, info);
+     LOG_FIRST(400, "open %s", name.c_str());
+@@ -447,14 +455,56 @@ KERNEL_EXPORT(202, NtOpenFile, 6) {
+         if (!f->fp) f->fp = std::fopen(host.c_str(), "rb");
+         if (!f->fp) return kAccessDenied;
+     }
+-    (void)options;
++    f->async = !(options & 0x30);
+     W32(handle_out, NewHandle(f));
+     IoStatus(iosb, kSuccess, 1);
+     return kSuccess;
+ }
+ 
+-// I/O completes before the call returns: the status block is written, then the file object, the event and the
+-// APC are signalled (GetOverlappedResult without an event waits on the file handle)
++// An overlapped read with neither an event nor an APC is polled: the caller watches its status block. On the
++// console that read is still pending when the call returns, and code such as XACT's streams counts on it (a stream
++// whose whole wave comes in one read is never started when that read is already done). The data is read at once,
++// but the status block says pending until a host thread completes it a moment later.
++namespace {
++struct Deferred {
++    std::shared_ptr<File> f;
++    uint32_t iosb, n;
++    std::chrono::steady_clock::time_point due;
++};
++std::mutex g_deferred_lock;
++std::condition_variable g_deferred_cv;
++std::deque<Deferred> g_deferred;
++}  // namespace
++
++static void Defer(const std::shared_ptr<File>& f, uint32_t iosb, uint32_t n) {
++    static std::once_flag started;
++    std::call_once(started, [] {
++        std::thread([] {
++            std::unique_lock<std::mutex> lock(g_deferred_lock);
++            for (;;) {
++                g_deferred_cv.wait(lock, [] { return !g_deferred.empty(); });
++                auto due = g_deferred.front().due;
++                if (std::chrono::steady_clock::now() < due) {
++                    g_deferred_cv.wait_until(lock, due);
++                    continue;
++                }
++                Deferred d = std::move(g_deferred.front());
++                g_deferred.pop_front();
++                lock.unlock();
++                IoStatus(d.iosb, kSuccess, d.n);
++                SetEvent(*d.f);
++                lock.lock();
++            }
++        }).detach();
++    });
++    IoStatus(iosb, kPending, 0);
++    std::lock_guard<std::mutex> lock(g_deferred_lock);
++    g_deferred.push_back({f, iosb, n, std::chrono::steady_clock::now() + std::chrono::milliseconds(2)});
++    g_deferred_cv.notify_one();
++}
++
++// I/O completes before the call returns (but for the polled reads above): the status block is written, then the file
++// object, the event and the APC are signalled (GetOverlappedResult without an event waits on the file handle)
+ static uint32_t Finish(File& f, uint32_t status, uint32_t n, uint32_t event, uint32_t apc, uint32_t apc_ctx, uint32_t iosb) {
+     IoStatus(iosb, status, n);
+     SetEvent(f);
+@@ -484,15 +534,29 @@ static uint32_t Transfer(const Args& a, bool write, uint32_t pages) {
          size_t done = f->entry ? MountedDisc()->Read(*f->entry, pos + n, HostPtr(at), chunk)
                        : write  ? std::fwrite(HostPtr(at), 1, chunk, f->fp)
                                 : std::fread(HostPtr(at), 1, chunk, f->fp);
@@ -3432,7 +3525,13 @@ index e34ffbb..6a58f22 100644
          n += uint32_t(done);
          if (done < chunk) break;
      }
-@@ -493,6 +495,15 @@ static uint32_t Transfer(const Args& a, bool write, uint32_t pages) {
+     f->pos = pos + n;
+     if (write && n < len) return Finish(*f, 0xC000007F, n, event, apc, apc_ctx, iosb);  // disk full
+     if (!write && len && !n) return Finish(*f, kEndOfFile, 0, event, apc, apc_ctx, iosb);
++    if (!write && f->async && !event && !apc && iosb) {
++        Defer(f, iosb, n);
++        return kPending;
++    }
      return Finish(*f, kSuccess, n, event, apc, apc_ctx, iosb);
  }
  

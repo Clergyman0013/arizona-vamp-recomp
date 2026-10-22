@@ -71,6 +71,17 @@ menu still needed):
 | General | Pause on focus loss (game + sound) | no |
 | Misc | Custom menu cursor (`cursor.png`) | no |
 
+### Short streamed sounds (2026-10-21)
+
+- The horse in THE WRONG TRAIN made no sound. The game asks for it (`HORSE_WAKE01`, from the horse's wake animation)
+  and XACT takes the cue, but its wave is in a streamed bank (`EMITTER_BASE_S`; the `_S` banks stream from disc, the
+  `_M` banks sit in memory). XACT starts a stream once a read is pending; our file reads finished inside the call,
+  so a wave that fits in one read (under 36 KB) never started. At the level start 65 of 164 streams never played:
+  short emitter sounds, voice barks, the horse. Polled reads now stay pending for 2 ms (SDK patch,
+  `runtime/kernel/files.cpp`). All streams start now; the owner heard the horse, music and voices unchanged.
+- Junior task-018's "the cue never fires" and "melee does no damage" were wrong: the cue fires (the junior only
+  logged buffers, not streams), and melee was the automated walk missing the lock. Notes are local.
+
 ### Field of view fix, mouse look logging (2026-10-21, v0.5.1)
 
 - The field of view setting widened the view across only, which squeezed the world sideways. It now widens width
