@@ -25,6 +25,10 @@ namespace menu {
 void OpenFromGame();
 }
 
+namespace settings_menu {
+void Opening(X86Context& ctx);  // src/game/settings_menu.cpp
+}
+
 namespace coop {
 void MainPick(X86Context& ctx, uint32_t item);
 }
@@ -88,16 +92,14 @@ void Patch() {
 
 }  // namespace game_menu
 
-// the pause menu's select (A) handler, thiscall (this: the page's handler, +4 its menu; 1 arg): it tells the
-// entries apart by their element names; XBL_XboxLiveOptions opens the PC settings menu instead of signing in
+// the pause menu's select (A) handler, thiscall (this: the page's handler, +4 its menu; 1 arg): PC SETTINGS is the
+// Xbox Live options page, renamed in place; the game opens its link as for any other page, and settings_menu.cpp
+// has put our rows there. Tell it when the page is asked for, so it can take the values from the settings file.
 X86_EXTERN_FUNC(__imp__sub_000F64B3);
 X86_FUNC(sub_000F64B3) {
     uint32_t item = game_menu::Selected(kernel::R32(ctx.ecx + 4));
-    if (item && kernel::g_base[item + 0x54] && game_menu::Named(item, "XBL_XboxLiveOptions")) {
-        menu::OpenFromGame();
-        kernel::Return(ctx, 0, 1);
-        return;
-    }
+    if (item && kernel::g_base[item + 0x54] && game_menu::Named(item, "XBL_XboxLiveOptions"))
+        settings_menu::Opening(ctx);
     __imp__sub_000F64B3(ctx, base);
 }
 
@@ -233,14 +235,11 @@ X86_FUNC(sub_000EA9B7) {
     __imp__sub_000EA9B7(ctx, base);
 }
 
-// the front end's main_options select (A) handler, thiscall (this: the handler, +4 its menu; 1 arg)
+// the front end's main_options select (A) handler, thiscall (this: the handler, +4 its menu; 1 arg). PC SETTINGS
+// (the renamed Xbox Live row) opens its own game page; tell settings_menu.cpp when it is asked for.
 X86_EXTERN_FUNC(__imp__sub_000F56F3);
 X86_FUNC(sub_000F56F3) {
     uint32_t item = game_menu::Selected(kernel::R32(ctx.ecx + 4));
-    if (item && game_menu::Named(item, "XBL_XboxLive")) {
-        menu::OpenFromGame();
-        kernel::Return(ctx, 0, 1);
-        return;
-    }
+    if (item && game_menu::Named(item, "XBL_XboxLive")) settings_menu::Opening(ctx);
     __imp__sub_000F56F3(ctx, base);
 }

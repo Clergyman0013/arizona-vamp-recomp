@@ -30,6 +30,10 @@ namespace menu {
 bool MenuOpen();
 }
 
+namespace settings_menu {
+void MenuInput(X86Context& ctx, uint32_t menu);  // src/game/settings_menu.cpp: left/right on the PC SETTINGS page
+}
+
 namespace mouse_menus {
 
 bool g_on = true;  // settings.toml mouse_menus
@@ -231,6 +235,7 @@ void Pad(int port, input::Pad& pad) {
 
 X86_EXTERN_FUNC(__imp__sub_001EF55C);
 X86_FUNC(sub_001EF55C) {
+    settings_menu::MenuInput(ctx, ctx.ecx);  // the native PC SETTINGS page: left/right change the selected value
     mouse_menus::MenuInput(ctx, ctx.ecx);
     __imp__sub_001EF55C(ctx, base);
 }

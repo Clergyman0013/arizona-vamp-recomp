@@ -1,0 +1,813 @@
+// PC SETTINGS as the game's own page. The Xbox Live options page (front end OPTIONS and pause menu) is renamed by
+// menu_hooks.cpp and already opens like any other game page; this file replaces its rows with our settings and
+// drives them with the game's own widgets, sounds, A / B and mouse rules.
+//
+// Rows are the game's MenuItem (0x43C8F8), BoolWidget (0x43C9B0) and IntegerWidget (0x43C97C) made with the same
+// constructors the game's data pages use. The page handler is the game's 0xF6A6D for the Xbox Live page; its update,
+// select (A) and back (B) virtuals are taken over while our rows are on the page.
+//
+// Values are ours alone: app::Get() and the menu:: globals (settings.toml). The game's own audio/controls options
+// are untouched. Every change applies at once, as the F1 menu's do; APPLY CHANGES and the save prompt write the
+// file, and DISCARD restores the values read when the page opened.
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+
+#include <algorithm>
+#include <atomic>
+#include <cstdio>
+#include <cstring>
+#include <initializer_list>
+#include <string>
+#include <vector>
+
+#include "app/app.h"
+#include "core/log.h"
+#include "xdk/hle.h"
+
+namespace menu {
+extern bool g_show_fps, g_ps2_alpha;
+extern uint32_t g_fov, g_weapon_fov, g_reticle;
+extern bool g_widescreen, g_mouse_direct, g_cutscene_borders;
+void OpenFromGame();  // src/common/menu.cpp: the F1 overlay
+}  // namespace menu
+
+namespace content {
+extern bool g_bonus;
+}
+
+namespace prompts {
+extern uint32_t g_style;
+}
+
+namespace mouse_menus {
+extern bool g_on;
+}
+
+namespace settings_menu {
+
+namespace {
+
+// game objects and calls, all proved in tasks/task-019-notes.md
+constexpr uint32_t kMenuVtable = 0x43C8B8;   // Menu
+constexpr uint32_t kAlloc = 0x0024C546;      // operator new, cdecl
+constexpr uint32_t kIntern = 0x000138FA;     // StringId(const char*), thiscall on the id, ret 4
+
+constexpr uint32_t kMenuItemCtor = 0x001EFB52;
+constexpr uint32_t kReserve = 0x000166F7;    // grow a menu container (rows or children)
+constexpr uint32_t kBoolCtor = 0x001F04A5;
+constexpr uint32_t kBoolSet = 0x001F0396;
+constexpr uint32_t kBoolInput = 0x001F045A;
+constexpr uint32_t kIntCtor = 0x001F02EC;
+constexpr uint32_t kIntSet = 0x001F0210;
+constexpr uint32_t kIntInput = 0x001F0292;
+constexpr uint32_t kMoveSound = 0x001E917C;
+constexpr uint32_t kOriginalBack = 0x000F68E3;
+
+// menu fields (mouse_menus.cpp has the same list)
+constexpr uint32_t kMenuCount = 0x58, kMenuRows = 0x5C, kMenuFirst = 0x60, kMenuShown = 0x64, kMenuPicked = 0x68;
+constexpr uint32_t kRowOn = 0x54, kRowText = 0x58, kRowName = 0x30;
+constexpr uint32_t kBoolState = 0x68;
+constexpr uint32_t kIntValue = 0x64;
+
+// our page rows
+enum Opt {
+    kDisplayMode, kRender, kFps, kVsync,
+    kPs2, kAniso, kMsaa, kPrecompile, kFov, kWeaponFov, kWide, kReticle, kBorders,
+    kPrompts, kKeyboard, kMouseLook, kMouseSens, kMouseDirect, kMouseMenus,
+    kShowFps, kBonus,
+    kOptCount,
+    kHeader = -1, kApply = -2, kF1 = -3, kBack = -4,
+    kConfirmTitle = -5, kConfirmSave = -6, kConfirmDiscard = -7,
+};
+
+enum Kind { kBool, kInt, kChoice, kAction };
+
+struct Def {
+    Kind kind;
+    const char* label;
+    int lo, hi;
+    const char* const* names;
+    int name_count;
+};
+
+const char* const kModes[] = {"FULLSCREEN", "BORDERLESS", "WINDOWED"};
+const char* const kCaps[] = {"30", "60", "120", "144", "165", "240", "UNLIMITED"};
+const uint32_t kCapValues[] = {30, 60, 120, 144, 165, 240, 0};
+const char* const kAnisoNames[] = {"AS THE GAME ASKS", "2X", "4X", "8X", "16X"};
+const uint32_t kAnisoValues[] = {0, 2, 4, 8, 16};
+const char* const kMsaaNames[] = {"OFF", "2X", "4X", "8X"};
+const uint32_t kMsaaValues[] = {0, 2, 4, 8};
+const char* const kPromptStyles[] = {"CONTROLLER IN USE", "XBOX", "PLAYSTATION", "SWITCH"};
+
+const Def kDefs[kOptCount] = {
+    {kChoice, "DISPLAY MODE", 0, 2, kModes, 3},
+    {kInt, "RENDER RESOLUTION", 25, 200, nullptr, 0},
+    {kChoice, "MAX FRAME RATE", 0, 6, kCaps, 7},
+    {kBool, "V-SYNC", 0, 0, nullptr, 0},
+    {kBool, "PS2 ALPHA BLENDING", 0, 0, nullptr, 0},
+    {kChoice, "ANISOTROPIC FILTERING", 0, 4, kAnisoNames, 5},
+    {kChoice, "ANTI-ALIASING (MSAA)", 0, 3, kMsaaNames, 4},
+    {kBool, "PRECOMPILE SHADERS", 0, 0, nullptr, 0},
+    {kInt, "FIELD OF VIEW", 39, 110, nullptr, 0},
+    {kInt, "WEAPON FIELD OF VIEW", 39, 110, nullptr, 0},
+    {kBool, "WIDESCREEN FRAMING", 0, 0, nullptr, 0},
+    {kInt, "RETICLE SIZE", 50, 200, nullptr, 0},
+    {kBool, "CUT-SCENE BORDERS", 0, 0, nullptr, 0},
+    {kChoice, "BUTTON PROMPTS", 0, 3, kPromptStyles, 4},
+    {kBool, "KEYBOARD AND MOUSE", 0, 0, nullptr, 0},
+    {kBool, "MOUSE LOOK", 0, 0, nullptr, 0},
+    {kInt, "MOUSE SENSITIVITY", 10, 400, nullptr, 0},
+    {kBool, "DIRECT MOUSE AIMING", 0, 0, nullptr, 0},
+    {kBool, "MOUSE IN MENUS", 0, 0, nullptr, 0},
+    {kBool, "SHOW FRAME RATE", 0, 0, nullptr, 0},
+    {kBool, "WAR TRAIN AND SPLITTER GRENADES", 0, 0, nullptr, 0},
+};
+
+struct Values {
+    uint32_t v[kOptCount];
+};
+
+struct RowRef {
+    int opt;
+    uint32_t row;
+};
+
+std::atomic<uint32_t> s_handler{0};  // the Xbox Live page handler we took over
+std::atomic<uint32_t> s_menu{0};
+bool s_ready = false;   // rows built, original rows saved
+bool s_live = false;    // the page is open
+bool s_dirty = false;   // a value changed since the page opened (or the last Apply)
+bool s_confirm = false; // the SAVE / DISCARD rows are up
+bool s_pending = false; // the page was asked for: snapshot it on the next update
+
+uint32_t s_orig_count = 0, s_orig_first = 0, s_orig_shown = 0, s_orig_picked = 0;
+std::vector<uint32_t> s_orig_rows;
+std::vector<uint8_t> s_orig_on;
+std::vector<RowRef> s_rows;
+std::vector<uint32_t> s_confirm_rows;
+uint32_t s_apply_row = 0, s_f1_row = 0, s_back_row = 0;
+uint32_t s_choice_rows[kOptCount][8] = {};  // one ready MenuItem per choice value, so a change never rewrites text
+uint32_t s_choice_idx[kOptCount] = {};
+Values s_snapshot{};
+
+// fixed guest memory for our texts and ids: allocated once with the game's own allocator
+uint32_t s_strings = 0, s_strings_at = 0;
+uint32_t s_ids = 0, s_ids_at = 0;
+uint32_t s_choice_id[kOptCount][8] = {};
+
+bool ReadyForText() { return s_strings && s_ids; }
+
+uint32_t GuestText(X86Context& ctx, const char* text) {
+    const size_t n = std::strlen(text) + 1;
+    if (!s_strings || s_strings_at + n > 0x4000) return 0;
+    uint32_t at = s_strings + s_strings_at;
+    std::memcpy(kernel::g_base + at, text, n);
+    s_strings_at += uint32_t(n + 3) & ~3u;
+    (void)ctx;
+    return at;
+}
+
+uint32_t Intern(X86Context& ctx, const char* text) {
+    if (!s_ids || s_ids_at + 4 > 0x1000) return 0;
+    uint32_t at = s_ids + s_ids_at;
+    s_ids_at += 4;
+    uint32_t chars = GuestText(ctx, text);
+    if (!chars) return 0;
+    ctx.ecx = at;
+    kernel::CallGuest(ctx, kIntern, {chars});
+    return at;
+}
+
+void Write8(uint32_t at, uint8_t value) { kernel::g_base[at] = value; }
+
+uint32_t Alloc(X86Context& ctx, uint32_t size) {
+    uint32_t at = kernel::CallGuest(ctx, kAlloc, {size});
+    if (at) std::memset(kernel::g_base + at, 0, size);
+    return at;
+}
+
+uint32_t Selected(uint32_t menu) {
+    uint32_t rows = kernel::R32(menu + kMenuRows);
+    return rows ? kernel::R32(rows + kernel::R32(menu + kMenuPicked) * 4) : 0;
+}
+
+bool RowIn(const std::vector<RowRef>& list, uint32_t row, int& opt) {
+    for (const RowRef& r : list)
+        if (r.row == row) {
+            opt = r.opt;
+            return true;
+        }
+    return false;
+}
+
+uint32_t CapIndex(uint32_t raw) {
+    for (int i = 0; i < 7; i++)
+        if (kCapValues[i] == raw) return uint32_t(i);
+    return 1;
+}
+
+uint32_t ChoiceIndex(int opt, uint32_t raw) {
+    switch (opt) {
+        case kDisplayMode: return raw < 3 ? raw : 1;
+        case kFps: return CapIndex(raw);
+        case kAniso:
+            for (int i = 0; i < 5; i++)
+                if (kAnisoValues[i] == raw) return uint32_t(i);
+            return 0;
+        case kMsaa:
+            for (int i = 0; i < 4; i++)
+                if (kMsaaValues[i] == raw) return uint32_t(i);
+            return 0;
+        default: return raw < uint32_t(kDefs[opt].name_count) ? raw : 0;
+    }
+}
+
+uint32_t ChoiceValue(int opt, uint32_t index) {
+    switch (opt) {
+        case kFps: return kCapValues[std::min<uint32_t>(index, 6)];
+        case kAniso: return kAnisoValues[std::min<uint32_t>(index, 4)];
+        case kMsaa: return kMsaaValues[std::min<uint32_t>(index, 3)];
+        default: return index;
+    }
+}
+
+Values ReadValues() {
+    Values v{};
+    const app::Settings& s = app::Get();
+    v.v[kDisplayMode] = uint32_t(s.display_mode);
+    v.v[kRender] = s.render_percent;
+    v.v[kFps] = s.fps_cap;
+    v.v[kVsync] = s.vsync;
+    v.v[kPs2] = menu::g_ps2_alpha;
+    v.v[kAniso] = s.aniso;
+    v.v[kMsaa] = s.msaa;
+    v.v[kPrecompile] = s.precompile_shaders;
+    v.v[kFov] = menu::g_fov ? menu::g_fov : 39;
+    v.v[kWeaponFov] = menu::g_weapon_fov ? menu::g_weapon_fov : 39;
+    v.v[kWide] = menu::g_widescreen;
+    v.v[kReticle] = menu::g_reticle;
+    v.v[kBorders] = menu::g_cutscene_borders;
+    v.v[kPrompts] = prompts::g_style;
+    v.v[kKeyboard] = s.keyboard;
+    v.v[kMouseLook] = s.mouse_look;
+    v.v[kMouseSens] = s.mouse_sensitivity;
+    v.v[kMouseDirect] = menu::g_mouse_direct;
+    v.v[kMouseMenus] = mouse_menus::g_on;
+    v.v[kShowFps] = menu::g_show_fps;
+    v.v[kBonus] = content::g_bonus;
+    return v;
+}
+
+void WriteValues(const Values& v) {
+    app::Settings& s = app::Get();
+    s.display_mode = app::DisplayMode(std::min<uint32_t>(v.v[kDisplayMode], 2));
+    s.render_percent = std::clamp<uint32_t>(v.v[kRender], 25, 200);
+    s.fps_cap = v.v[kFps];
+    s.vsync = v.v[kVsync] != 0;
+    menu::g_ps2_alpha = v.v[kPs2] != 0;
+    s.aniso = v.v[kAniso];
+    s.msaa = v.v[kMsaa];
+    s.precompile_shaders = v.v[kPrecompile] != 0;
+    menu::g_fov = v.v[kFov] <= 39 ? 0 : std::min<uint32_t>(v.v[kFov], 110);
+    menu::g_weapon_fov = v.v[kWeaponFov] <= 39 ? 0 : std::min<uint32_t>(v.v[kWeaponFov], 110);
+    menu::g_widescreen = v.v[kWide] != 0;
+    menu::g_reticle = std::clamp<uint32_t>(v.v[kReticle], 50, 200);
+    menu::g_cutscene_borders = v.v[kBorders] != 0;
+    prompts::g_style = std::min<uint32_t>(v.v[kPrompts], 3);
+    s.keyboard = v.v[kKeyboard] != 0;
+    s.mouse_look = v.v[kMouseLook] != 0;
+    s.mouse_sensitivity = std::clamp<uint32_t>(v.v[kMouseSens], 10, 400);
+    menu::g_mouse_direct = v.v[kMouseDirect] != 0;
+    mouse_menus::g_on = v.v[kMouseMenus] != 0;
+    menu::g_show_fps = v.v[kShowFps] != 0;
+    content::g_bonus = v.v[kBonus] != 0;
+}
+
+uint32_t RowValue(int opt) {
+    switch (kDefs[opt].kind) {
+        case kBool: {
+            for (const RowRef& r : s_rows)
+                if (r.opt == opt) return kernel::g_base[r.row + kBoolState];
+            return 0;
+        }
+        case kInt: {
+            for (const RowRef& r : s_rows)
+                if (r.opt == opt) return kernel::R32(r.row + kIntValue);
+            return 0;
+        }
+        default: return s_choice_idx[opt];
+    }
+}
+
+// The menu keeps its rows in two places: the list it draws and steers (count +0x58, array +0x5C) and its child
+// list (count +0x08, array +0x0C), which is what draws the elements. ShowList writes both to the same rows, so a
+// row that is not on the page is not drawn, and the game's old Xbox Live rows stop drawing as well.
+void ShowList(X86Context& ctx, const std::vector<uint32_t>& rows, uint32_t first, uint32_t picked, uint32_t shown) {
+    uint32_t menu = s_menu;
+    if (!menu) return;
+
+    ctx.ecx = menu + kMenuCount;
+    kernel::CallGuest(ctx, kReserve, {uint32_t(rows.size() + 8)});
+    uint32_t array = kernel::R32(menu + kMenuRows);
+    for (size_t i = 0; array && i < rows.size(); i++) kernel::W32(array + uint32_t(i) * 4, rows[i]);
+    kernel::W16(menu + kMenuCount, uint16_t(rows.size()));
+
+    ctx.ecx = menu + 0x08;
+    kernel::CallGuest(ctx, kReserve, {uint32_t(rows.size() + 8)});
+    uint32_t children = kernel::R32(menu + 0x0C);
+    for (size_t i = 0; children && i < rows.size(); i++) {
+        kernel::W32(children + uint32_t(i) * 4, rows[i]);
+        kernel::W32(rows[i] + 4, menu);
+        Write8(rows[i] + kRowOn, 1);
+    }
+    kernel::W16(menu + 0x08, uint16_t(rows.size()));
+
+    kernel::W32(menu + kMenuFirst, first);
+    kernel::W32(menu + kMenuPicked, picked);
+    kernel::W32(menu + kMenuShown, shown);
+}
+
+void CopyFont(uint32_t row, uint32_t peer) {
+    uint32_t text = kernel::R32(row + kRowText), p = peer ? kernel::R32(peer + kRowText) : 0;
+    if (!text || !p) return;
+    for (uint32_t o : {0x64u, 0x6Cu, 0x70u, 0x74u}) kernel::W32(text + o, kernel::R32(p + o));
+}
+
+uint32_t MenuItem(X86Context& ctx, uint32_t name, uint32_t link) {
+    uint32_t row = Alloc(ctx, 0x68);
+    if (!row) return 0;
+    uint32_t empty = Intern(ctx, "");
+    ctx.ecx = row;
+    kernel::CallGuest(ctx, kMenuItemCtor, {name, link, empty});
+    return row;
+}
+
+void BuildRows(X86Context& ctx) {
+    uint32_t menu = s_menu;
+    if (!menu) return;
+    s_rows.clear();
+    s_confirm_rows.clear();
+    uint32_t peer = s_orig_rows.empty() ? 0 : s_orig_rows[0];
+
+    auto header = [&](const char* text) {
+        LOGR("settings page: header %s", text);
+        uint32_t row = MenuItem(ctx, Intern(ctx, text), Intern(ctx, "pc_header"));
+        if (!row) return;
+        Write8(row + kRowOn, 0);
+        CopyFont(row, peer);
+        s_rows.push_back({kHeader, row});
+    };
+
+    auto action = [&](const char* text, const char* link, int opt) {
+        LOGR("settings page: action %s", text);
+        uint32_t row = MenuItem(ctx, Intern(ctx, text), Intern(ctx, link));
+        if (!row) return;
+        Write8(row + kRowOn, 0);
+        CopyFont(row, peer);
+        s_rows.push_back({opt, row});
+        if (opt == kApply) s_apply_row = row;
+        if (opt == kF1) s_f1_row = row;
+        if (opt == kBack) s_back_row = row;
+    };
+
+    auto option = [&](int opt) {
+        const Def& d = kDefs[opt];
+        LOGR("settings page: option %d %s", opt, d.label);
+        const Values v = ReadValues();
+        if (d.kind == kChoice) {
+            uint32_t link = Intern(ctx, "pc_choice");
+            for (int i = 0; i < d.name_count; i++) {
+                uint32_t row = MenuItem(ctx, s_choice_id[opt][i], link);
+                if (!row) continue;
+                Write8(row + kRowOn, 0);
+                CopyFont(row, peer);
+                s_choice_rows[opt][i] = row;
+            }
+            uint32_t idx = ChoiceIndex(opt, v.v[opt]);
+            s_choice_idx[opt] = idx;
+            uint32_t row = s_choice_rows[opt][idx];
+            if (!row) return;
+            s_rows.push_back({opt, row});
+            return;
+        }
+        uint32_t name = Intern(ctx, (std::string("~") + d.label).c_str());
+        if (d.kind == kBool) {
+            uint32_t row = Alloc(ctx, 0xA0);
+            if (!row) return;
+            // BoolWidget takes its callback delegate by value (five dwords after the name); all zero is a null
+            // delegate, and the setter only calls it when +0x7C is set, which we keep clear.
+            ctx.ecx = row;
+            kernel::CallGuest(ctx, kBoolCtor, {name, 0, 0, 0, 0, 0});
+            Write8(row + 0x7C, 0);  // no callback: values are written here, not by the game's page
+            CopyFont(row, peer);
+            ctx.ecx = row;
+            kernel::CallGuest(ctx, kBoolSet, {v.v[opt] != 0, 0});
+            s_rows.push_back({opt, row});
+        } else {
+            uint32_t cb = Alloc(ctx, 0x28);
+            uint32_t row = Alloc(ctx, 0xA0);
+            if (!row) return;
+            ctx.ecx = row;
+            kernel::CallGuest(ctx, kIntCtor, {uint32_t(d.lo), uint32_t(d.hi), name, cb});
+            Write8(row + 0x78, 0);  // no callback
+            // an IntegerWidget draws its own name and value: unlike MenuItem it has no text child, and +0x58 is
+            // a byte flag there, so the MenuItem text look above must not be copied onto it
+            uint32_t value = std::clamp<int>(int(v.v[opt]), d.lo, d.hi);
+            ctx.ecx = row;
+            kernel::CallGuest(ctx, kIntSet, {value, 0});
+            s_rows.push_back({opt, row});
+        }
+    };
+
+    header("~DISPLAY");
+    option(kDisplayMode);
+    option(kRender);
+    option(kFps);
+    option(kVsync);
+
+    header("~GRAPHICS");
+    option(kPs2);
+    option(kAniso);
+    option(kMsaa);
+    option(kPrecompile);
+    option(kFov);
+    option(kWeaponFov);
+    option(kWide);
+    option(kReticle);
+    option(kBorders);
+
+    header("~CONTROLS");
+    option(kPrompts);
+    option(kKeyboard);
+    option(kMouseLook);
+    option(kMouseSens);
+    option(kMouseDirect);
+    option(kMouseMenus);
+
+    header("~GAME");
+    option(kShowFps);
+    option(kBonus);
+
+    action("~MORE SETTINGS (F1)", "pc_f1", kF1);
+    action("~APPLY CHANGES", "pc_apply", kApply);
+    action("~BACK", "pc_back", kBack);
+
+    // the small confirm page: a title, then Save and Discard
+    uint32_t title = MenuItem(ctx, Intern(ctx, "~UNSAVED CHANGES"), Intern(ctx, "pc_confirm_title"));
+    if (title) {
+        Write8(title + kRowOn, 0);
+        CopyFont(title, peer);
+        s_confirm_rows.push_back(title);
+    }
+    uint32_t save = MenuItem(ctx, Intern(ctx, "~SAVE CHANGES"), Intern(ctx, "pc_confirm_save"));
+    if (save) {
+        Write8(save + kRowOn, 0);
+        CopyFont(save, peer);
+        s_confirm_rows.push_back(save);
+    }
+    uint32_t discard = MenuItem(ctx, Intern(ctx, "~DISCARD CHANGES"), Intern(ctx, "pc_confirm_discard"));
+    if (discard) {
+        Write8(discard + kRowOn, 0);
+        CopyFont(discard, peer);
+        s_confirm_rows.push_back(discard);
+    }
+    // BuildRows only makes the rows; the caller picks which set the menu shows.
+}
+
+void ShowMain(X86Context& ctx, bool reset) {
+    uint32_t menu = s_menu;
+    uint32_t first = reset ? 0 : kernel::R32(menu + kMenuFirst);
+    uint32_t picked = reset ? 0 : kernel::R32(menu + kMenuPicked);
+    uint32_t shown = reset || !kernel::R32(menu + kMenuShown) ? (s_orig_shown ? s_orig_shown : 6)
+                                                               : kernel::R32(menu + kMenuShown);
+    std::vector<uint32_t> rows;
+    rows.reserve(s_rows.size());
+    for (const RowRef& r : s_rows) rows.push_back(r.row);
+    ShowList(ctx, rows, first, picked, shown);
+}
+
+void ShowConfirm(X86Context& ctx) { ShowList(ctx, s_confirm_rows, 0, 0, 3); }
+
+void RestoreOriginal(X86Context& ctx) {
+    if (!s_menu) return;
+    ShowList(ctx, s_orig_rows, s_orig_first, s_orig_picked, s_orig_shown);
+    for (size_t i = 0; i < s_orig_rows.size() && i < s_orig_on.size(); i++)
+        Write8(s_orig_rows[i] + kRowOn, s_orig_on[i]);
+}
+
+void SyncRows(X86Context& ctx) {
+    if (!s_ready || s_confirm) return;
+    const Values v = ReadValues();
+    bool choice_changed = false;
+    for (RowRef& r : s_rows) {
+        int opt = r.opt;
+        if (opt < 0 || opt >= kOptCount) continue;
+        const Def& d = kDefs[opt];
+        if (d.kind == kBool) {
+            uint32_t want = v.v[opt] != 0;
+            if (kernel::g_base[r.row + kBoolState] != want) {
+                ctx.ecx = r.row;
+                kernel::CallGuest(ctx, kBoolSet, {want, 0});
+            }
+        } else if (d.kind == kInt) {
+            uint32_t want = std::clamp<int>(int(v.v[opt]), d.lo, d.hi);
+            if (kernel::R32(r.row + kIntValue) != want) {
+                ctx.ecx = r.row;
+                kernel::CallGuest(ctx, kIntSet, {want, 0});
+            }
+        } else if (d.kind == kChoice) {
+            uint32_t idx = ChoiceIndex(opt, v.v[opt]);
+            if (idx != s_choice_idx[opt]) {
+                s_choice_idx[opt] = idx;
+                if (uint32_t row = s_choice_rows[opt][idx]) r.row = row;
+                choice_changed = true;
+            }
+        }
+    }
+    if (choice_changed) ShowMain(ctx, false);
+}
+
+void ApplyOne(X86Context& ctx, int opt) {
+    Values v = ReadValues();
+    if (opt < 0 || opt >= kOptCount) return;
+    const Def& d = kDefs[opt];
+    if (d.kind == kChoice) {
+        uint32_t idx = RowValue(opt);
+        v.v[opt] = ChoiceValue(opt, idx);
+    } else {
+        v.v[opt] = RowValue(opt);
+    }
+    WriteValues(v);
+    s_dirty = true;
+    (void)ctx;
+}
+
+void ApplyAndSave(X86Context& ctx) {
+    const Values v = ReadValues();
+    WriteValues(v);
+    app::ApplyDisplay();
+    app::Save();
+    s_dirty = false;
+    LOGR("settings page: applied");
+    (void)ctx;
+}
+
+void Discard(X86Context& ctx) {
+    WriteValues(s_snapshot);
+    app::ApplyDisplay();
+    SyncRows(ctx);
+    s_dirty = false;
+    LOGR("settings page: discarded");
+}
+
+void Leave(X86Context& ctx) {
+    RestoreOriginal(ctx);
+    s_live = false;
+    s_confirm = false;
+    ctx.ecx = s_handler;
+    kernel::CallGuest(ctx, kOriginalBack, {0});
+}
+
+void TryLeave(X86Context& ctx) {
+    if (s_dirty) {
+        ShowConfirm(ctx);
+        s_confirm = true;
+        return;
+    }
+    Leave(ctx);
+}
+
+bool Press(X86Context& ctx, uint32_t handler) {
+    if (!s_ready || handler != s_handler) return false;
+    uint32_t menu = s_menu;
+    uint32_t row = Selected(menu);
+    if (!row) return false;
+
+    if (s_confirm) {
+        if (row == (s_confirm_rows.size() > 1 ? s_confirm_rows[1] : 0)) {
+            ApplyAndSave(ctx);
+            s_confirm = false;
+            Leave(ctx);
+        } else if (row == (s_confirm_rows.size() > 2 ? s_confirm_rows[2] : 0)) {
+            Discard(ctx);
+            s_confirm = false;
+            Leave(ctx);
+        }
+        return true;
+    }
+
+    int opt = 0;
+    if (!RowIn(s_rows, row, opt)) return true;
+    if (opt == kHeader) return true;
+    if (opt == kApply) {
+        ApplyAndSave(ctx);
+        return true;
+    }
+    if (opt == kF1) {
+        menu::OpenFromGame();
+        return true;
+    }
+    if (opt == kBack) {
+        TryLeave(ctx);
+        return true;
+    }
+
+    const Def& d = kDefs[opt];
+    if (d.kind == kBool) {
+        uint32_t want = kernel::g_base[row + kBoolState] ? 0 : 1;
+        ctx.ecx = row;
+        kernel::CallGuest(ctx, kBoolSet, {want, 1});
+        ApplyOne(ctx, opt);
+    } else if (d.kind == kInt) {
+        uint32_t value = kernel::R32(row + kIntValue);
+        if (value < uint32_t(d.hi))
+            value++;
+        else
+            value = uint32_t(d.lo);
+        ctx.ecx = row;
+        kernel::CallGuest(ctx, kIntSet, {value, 1});
+        ApplyOne(ctx, opt);
+    } else {
+        uint32_t idx = (s_choice_idx[opt] + 1) % uint32_t(d.name_count);
+        Values v = ReadValues();
+        v.v[opt] = ChoiceValue(opt, idx);
+        WriteValues(v);
+        s_choice_idx[opt] = idx;
+        if (uint32_t next = s_choice_rows[opt][idx])
+            for (RowRef& r : s_rows)
+                if (r.opt == opt) r.row = next;
+        kernel::CallGuest(ctx, kMoveSound, {});
+        ShowMain(ctx, false);
+        s_dirty = true;
+    }
+    return true;
+}
+
+}  // namespace
+
+// the game's Xbox Live options page handler is built for both the front end OPTIONS page and the pause menu; once
+// it exists our rows go in place of the Xbox Live ones
+void Construct(X86Context& ctx) {
+    uint32_t handler = ctx.ecx;
+    uint32_t menu = handler ? kernel::R32(handler + 4) : 0;
+    if (!menu || kernel::R32(menu) != kMenuVtable) {
+        LOGR("settings page: Xbox Live page element %08X is not a menu (vtable %08X)", menu,
+             menu ? kernel::R32(menu) : 0);
+        return;
+    }
+
+    if (menu == s_menu && s_ready) return;
+    LOGR("settings page: construct handler %08X menu %08X", handler, menu);
+
+    s_handler = handler;
+    s_menu = menu;
+    s_ready = false;
+    s_live = false;
+    s_dirty = false;
+    s_confirm = false;
+    s_orig_rows.clear();
+    s_orig_on.clear();
+    s_rows.clear();
+    s_confirm_rows.clear();
+
+    s_orig_count = kernel::R16(menu + kMenuCount);
+    uint32_t rows = kernel::R32(menu + kMenuRows);
+    for (uint32_t i = 0; rows && i < s_orig_count && i < 64; i++) {
+        uint32_t row = kernel::R32(rows + i * 4);
+        s_orig_rows.push_back(row);
+        s_orig_on.push_back(row ? kernel::g_base[row + kRowOn] : 0);
+    }
+    s_orig_first = kernel::R32(menu + kMenuFirst);
+    s_orig_shown = kernel::R32(menu + kMenuShown);
+    s_orig_picked = kernel::R32(menu + kMenuPicked);
+
+    if (!s_strings) s_strings = Alloc(ctx, 0x4000);
+    if (!s_ids) s_ids = Alloc(ctx, 0x1000);
+    if (!ReadyForText()) {
+        LOGE("settings page: no guest memory for texts");
+        return;
+    }
+    LOGR("settings page: guest text %08X ids %08X", s_strings, s_ids);
+    s_strings_at = s_ids_at = 0;
+    std::memset(s_choice_id, 0, sizeof(s_choice_id));
+    std::memset(s_choice_rows, 0, sizeof(s_choice_rows));
+    std::memset(s_choice_idx, 0, sizeof(s_choice_idx));
+
+    for (int opt = 0; opt < kOptCount; opt++) {
+        const Def& d = kDefs[opt];
+        if (d.kind != kChoice) continue;
+        LOGR("settings page: choice texts %d", opt);
+        for (int i = 0; i < d.name_count; i++) {
+            char line[96];
+            std::snprintf(line, sizeof(line), "~%s: %s", d.label, d.names[i]);
+            s_choice_id[opt][i] = Intern(ctx, line);
+        }
+    }
+    LOGR("settings page: choice texts ready");
+
+    BuildRows(ctx);
+    LOGR("settings page: rows built");
+    s_ready = true;
+    s_pending = true;
+    LOGR("settings page: %u rows ready in menu %08X (was %u rows)", uint32_t(s_rows.size()), menu, s_orig_count);
+}
+
+// called by the OPTIONS / pause select handlers just before the game opens the Xbox Live page
+void Opening(X86Context& ctx) {
+    Values snapshot = ReadValues();
+    if (s_ready) {
+        // Only take the snapshot here: the page is being opened by the game's own select handler and the menu
+        // must not be reshaped under it. The next update puts our rows up, before the page is drawn.
+        s_snapshot = snapshot;
+        s_dirty = false;
+        s_confirm = false;
+        s_live = true;
+    }
+    s_pending = true;
+}
+
+// once a frame while the page handler is alive: keep our rows in step with the settings (the F1 overlay can change
+// them too) and leave the game's Xbox Live update out of it
+bool Update(X86Context& ctx) {
+    if (!s_ready || ctx.ecx != s_handler) return false;
+    if (s_pending) {
+        s_snapshot = ReadValues();
+        s_dirty = false;
+        s_confirm = false;
+        s_live = true;
+        s_pending = false;
+        LOGR("settings page: update opening");
+        ShowMain(ctx, true);
+        LOGR("settings page: update shown");
+    }
+    if (s_live) {
+        SyncRows(ctx);
+    }
+    return true;
+}
+
+bool PressHandler(X86Context& ctx, uint32_t handler) { return Press(ctx, handler); }
+
+bool BackHandler(X86Context& ctx, uint32_t handler) {
+    if (!s_ready || handler != s_handler) return false;
+    if (s_confirm) {
+        s_confirm = false;
+        ShowMain(ctx, true);
+        return true;
+    }
+    TryLeave(ctx);
+    return true;
+}
+
+// left and right on the selected row: the game's own widget input changes the value (with its repeat)
+void MenuInput(X86Context& ctx, uint32_t menu) {
+    if (!s_ready || menu != s_menu || !s_live || s_confirm) return;
+    uint32_t row = Selected(menu);
+    int opt = 0;
+    if (!row || !RowIn(s_rows, row, opt) || opt < 0) return;
+    const Def& d = kDefs[opt];
+    if (d.kind == kBool || d.kind == kInt) {
+        uint32_t before = RowValue(opt);
+        uint32_t pad = kernel::R32(ctx.esp + 4);
+        ctx.ecx = row;
+        kernel::CallGuest(ctx, d.kind == kBool ? kBoolInput : kIntInput, {0, 0, pad});
+        if (RowValue(opt) != before) ApplyOne(ctx, opt);
+    }
+}
+
+}  // namespace settings_menu
+
+X86_EXTERN_FUNC(__imp__sub_000F6A6D);
+X86_FUNC(sub_000F6A6D) {
+    __imp__sub_000F6A6D(ctx, base);
+    settings_menu::Construct(ctx);
+}
+
+X86_EXTERN_FUNC(__imp__sub_000F6B14);
+X86_FUNC(sub_000F6B14) {
+    if (settings_menu::Update(ctx)) return;
+    __imp__sub_000F6B14(ctx, base);
+}
+
+X86_EXTERN_FUNC(__imp__sub_000F6DD3);
+X86_FUNC(sub_000F6DD3) {
+    if (settings_menu::PressHandler(ctx, ctx.ecx)) {
+        kernel::Return(ctx, 0, 1);
+        return;
+    }
+    __imp__sub_000F6DD3(ctx, base);
+}
+
+X86_EXTERN_FUNC(__imp__sub_000F68E3);
+X86_FUNC(sub_000F68E3) {
+    if (settings_menu::BackHandler(ctx, ctx.ecx)) {
+        kernel::Return(ctx, 0, 1);
+        return;
+    }
+    __imp__sub_000F68E3(ctx, base);
+}
