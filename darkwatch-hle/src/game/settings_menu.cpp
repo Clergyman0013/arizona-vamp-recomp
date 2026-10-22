@@ -69,6 +69,7 @@ constexpr uint32_t kMenuVtable = 0x43C8B8;   // Menu
 constexpr uint32_t kAlloc = 0x0024C546;      // operator new, cdecl
 constexpr uint32_t kIntern = 0x000138FA;     // StringId(const char*), thiscall on the id, ret 4
 constexpr uint32_t kRelease = 0x00011C1A;    // ~StringId, thiscall
+constexpr uint32_t kCopyId = 0x000C448D;     // StringId copy assign, thiscall, ret 4
 
 constexpr uint32_t kMenuItemCtor = 0x001EFB52;
 constexpr uint32_t kReserve = 0x000166F7;    // grow a menu container (rows or children)
@@ -211,6 +212,7 @@ int s_help_opt = -999;
 // fixed guest memory for our texts and ids: allocated once with the game's own allocator
 uint32_t s_strings = 0, s_strings_at = 0;
 uint32_t s_ids = 0, s_ids_at = 0;
+uint32_t s_temp_id = 0;  // scratch StringId for choice row values
 uint32_t s_choice_text[kOptCount][64] = {};  // "~VALUE" text ids for the choice rows
 
 bool ReadyForText() { return s_strings && s_ids; }
@@ -438,24 +440,10 @@ uint32_t MenuItem(X86Context& ctx, uint32_t name, uint32_t link) {
     return row;
 }
 
-// a choice row is a BoolWidget with both strings set to the chosen value: the game's own < > arrows and text
-void UpdateChoiceText(X86Context& ctx, int opt, uint32_t index) {
-    if (s_choice_rows[opt].empty()) return;
-    uint32_t row = s_choice_rows[opt][0];
-    uint32_t chars = s_choice_text[opt][std::min<uint32_t>(index, 63)];
-    if (!chars) return;
-    // +0x80 and +0x88 are StringId objects (the ctor makes them from GEN_Yes/GEN_No): rebuild both from our
-    // chosen value, then copy one into the text element's StringId (+0x48) as BoolSet does
-    for (uint32_t at : {row + 0x80, row + 0x88}) {
-        ctx.ecx = at;
-        kernel::CallGuest(ctx, kIntern, {chars});
-    }
-    uint32_t text = kernel::R32(row + kRowText);
-    if (text) {
-        ctx.ecx = text + 0x48;
-        kernel::CallGuest(ctx, kSetText, {row + 0x80});
-    }
-    s_choice_idx[opt] = index;
+void SetChoiceRow(int opt, uint32_t row) {
+    for (int p = 0; p < kPageCount; p++)
+        for (RowRef& r : s_pages[p])
+            if (r.opt == opt) r.row = row;
 }
 
 void BuildRows(X86Context& ctx) {
@@ -482,22 +470,31 @@ void BuildRows(X86Context& ctx) {
         s_pages[page].push_back({opt, row});
     };
 
+    auto choice = [&](int opt) {
+        const Def& d = kDefs[opt];
+        const uint32_t count = ChoiceCount(opt);
+        s_choice_rows[opt].clear();
+        uint32_t link = Intern(ctx, "pc_choice");
+        for (uint32_t i = 0; i < count; i++) {
+            uint32_t row = MenuItem(ctx, s_choice_text[opt][i] ? s_choice_text[opt][i] : Intern(ctx, d.label), link);
+            if (!row) continue;
+            Write8(row + kRowOn, 0);
+            CopyFont(row, peer);
+            s_choice_rows[opt].push_back(row);
+        }
+    };
+
     auto option = [&](Page page, int opt, uint32_t index) {
         const Def& d = kDefs[opt];
         LOGR("settings page: option %d %s", opt, d.label);
         const Values v = ReadValues();
         uint32_t name = Intern(ctx, (std::string("~") + d.label).c_str());
         if (d.kind == kChoice) {
-            // a BoolWidget with both strings set to the chosen value draws the game's < value > row
-            uint32_t row = Alloc(ctx, 0xA0);
+            // one ready MenuItem per value, its text "LABEL: VALUE"; a change shows another of them
+            const uint32_t idx = std::min<uint32_t>(index, uint32_t(s_choice_rows[opt].size() ? s_choice_rows[opt].size() - 1 : 0));
+            uint32_t row = s_choice_rows[opt].empty() ? 0 : s_choice_rows[opt][idx];
             if (!row) return;
-            ctx.ecx = row;
-            kernel::CallGuest(ctx, kBoolCtor, {name, 0, 0, 0, 0, 0});
-            Write8(row + 0x7C, 0);
-            CopyInput(row);
-            CopyFont(row, peer);
-            s_choice_rows[opt].assign(ChoiceCount(opt), row);
-            UpdateChoiceText(ctx, opt, index);
+            s_choice_idx[opt] = idx;
             s_pages[page].push_back({opt, row});
             return;
         }
@@ -541,6 +538,11 @@ void BuildRows(X86Context& ctx) {
     action(kPageTop, "~BACK", "pc_back", kBack);
 
     // display and graphics
+    choice(kDisplayMode);
+    choice(kResolution);
+    choice(kFps);
+    choice(kAniso);
+    choice(kMsaa);
     header(kPageDisplay, "~DISPLAY AND GRAPHICS");
     option(kPageDisplay, kDisplayMode, ChoiceIndex(kDisplayMode, ReadValues().v[kDisplayMode]));
     option(kPageDisplay, kResolution, ChoiceIndex(kResolution, ReadValues().v[kResolution]));
@@ -559,6 +561,7 @@ void BuildRows(X86Context& ctx) {
     action(kPageDisplay, "~BACK", "pc_back", kBack);
 
     // controls
+    choice(kPrompts);
     header(kPageControls, "~CONTROLS");
     option(kPageControls, kPrompts, ChoiceIndex(kPrompts, ReadValues().v[kPrompts]));
     option(kPageControls, kKeyboard, 0);
@@ -757,8 +760,9 @@ void SyncRows(X86Context& ctx) {
             }
         } else if (d.kind == kChoice) {
             uint32_t idx = ChoiceIndex(opt, v.v[opt]);
-            if (idx != s_choice_idx[opt]) {
-                UpdateChoiceText(ctx, opt, idx);
+            if (idx != s_choice_idx[opt] && idx < s_choice_rows[opt].size()) {
+                s_choice_idx[opt] = idx;
+                r.row = s_choice_rows[opt][idx];
                 choice_changed = true;
             }
         }
@@ -792,7 +796,8 @@ void ChangeChoice(X86Context& ctx, int opt, uint32_t index) {
         s_pending_w = mode.width;
         s_pending_h = mode.height;
     }
-    UpdateChoiceText(ctx, opt, index);
+    if (uint32_t row = s_choice_rows[opt].empty() ? 0 : s_choice_rows[opt][index]) SetChoiceRow(opt, row);
+    s_choice_idx[opt] = index;
     kernel::CallGuest(ctx, kMoveSound, {});
     if (opt != kDisplayMode && opt != kResolution) {
         Values v = ReadValues();
@@ -817,8 +822,13 @@ void RevertDisplay(X86Context& ctx) {
     s_pending_mode = s_revert_mode;
     s_pending_w = s_revert_w;
     s_pending_h = s_revert_h;
-    UpdateChoiceText(ctx, kDisplayMode, std::min<uint32_t>(uint32_t(s_revert_mode), 2));
-    UpdateChoiceText(ctx, kResolution, ResIndex(s_revert_w, s_revert_h));
+    uint32_t mode_row = s_choice_rows[kDisplayMode].empty() ? 0 : s_choice_rows[kDisplayMode][std::min<uint32_t>(uint32_t(s_revert_mode), uint32_t(s_choice_rows[kDisplayMode].size() - 1))];
+    if (mode_row) SetChoiceRow(kDisplayMode, mode_row);
+    s_choice_idx[kDisplayMode] = std::min<uint32_t>(uint32_t(s_revert_mode), 2);
+    uint32_t res = ResIndex(s_revert_w, s_revert_h);
+    uint32_t res_row = s_choice_rows[kResolution].empty() ? 0 : s_choice_rows[kResolution][std::min<uint32_t>(res, uint32_t(s_choice_rows[kResolution].size() - 1))];
+    if (res_row) SetChoiceRow(kResolution, res_row);
+    s_choice_idx[kResolution] = res;
     s_dirty = false;
     s_keep = false;
     LOGR("settings page: display mode restored");
@@ -1047,8 +1057,8 @@ void Construct(X86Context& ctx) {
         const uint32_t count = std::min<uint32_t>(ChoiceCount(opt), 63);
         for (uint32_t i = 0; i < count; i++) {
             char line[128];
-            std::snprintf(line, sizeof(line), "~%s", ChoiceName(opt, i));
-            s_choice_text[opt][i] = GuestText(ctx, line);
+            std::snprintf(line, sizeof(line), "~%s: %s", d.label, ChoiceName(opt, i));
+            s_choice_text[opt][i] = Intern(ctx, line);
         }
     }
 
@@ -1177,19 +1187,43 @@ bool BackHandler(X86Context& ctx, uint32_t handler) {
     return true;
 }
 
-// left and right on the selected row: the game's own widget input changes a slider or an on/off row; a choice row
-// steps through its values here (it has one ready row per value, so the text changes without rewriting it)
+// left and right on the selected row change the value. The arrow keys are read here (the game maps them to the
+// pad, and the pad state the game passes in is not a plain held mask), with the guest's own direction test as a
+// fallback; the game's widgets get no input, so a slider steps once and then repeats.
 void MenuInput(X86Context& ctx, uint32_t menu) {
     if (!s_ready || menu != s_menu || !s_live || s_page >= kPageSave) return;
     uint32_t row = Selected(menu);
     int opt = 0;
     if (!row || !RowIn(s_page, row, opt) || opt < 0) return;
     const Def& d = kDefs[opt];
-    if (d.kind == kAction || d.kind == kChoice) {
-        if (d.kind == kAction) return;
+    if (d.kind == kAction) return;
+
+    static bool s_left_down = false, s_right_down = false;
+    static uint64_t s_left_at = 0, s_right_at = 0;
+    const uint64_t now = GetTickCount64();
+    const bool lnow = (GetAsyncKeyState(VK_LEFT) & 0x8000) != 0;
+    const bool rnow = (GetAsyncKeyState(VK_RIGHT) & 0x8000) != 0;
+    bool left = false, right = false;
+    if (lnow && (!s_left_down || now >= s_left_at)) {
+        left = true;
+        s_left_at = now + (s_left_down ? 80 : 350);
+    }
+    if (rnow && (!s_right_down || now >= s_right_at)) {
+        right = true;
+        s_right_at = now + (s_right_down ? 80 : 350);
+    }
+    s_left_down = lnow;
+    s_right_down = rnow;
+    if (!left && !right) {
         uint32_t state = kernel::R32(ctx.esp + 8);
-        const bool left = Pressed(ctx, menu, state, 2), right = Pressed(ctx, menu, state, 3);
-        if (left == right) return;
+        if (state) {
+            left = Pressed(ctx, menu, state, 2);
+            right = Pressed(ctx, menu, state, 3);
+        }
+    }
+    if (left == right) return;
+
+    if (d.kind == kChoice) {
         const uint32_t count = ChoiceCount(opt);
         if (!count) return;
         const uint32_t index = ChoiceIndex(opt, ReadValues().v[opt]);
@@ -1197,12 +1231,24 @@ void MenuInput(X86Context& ctx, uint32_t menu) {
         if (next != index) ChangeChoice(ctx, opt, next);
         return;
     }
-    uint32_t state = kernel::R32(ctx.esp + 8);
-    if (!state) return;
-    uint32_t before = RowValue(opt);
-    ctx.ecx = row;
-    kernel::CallGuest(ctx, d.kind == kBool ? kBoolInput : kIntInput, {0, state});
-    if (RowValue(opt) != before) ApplyOne(ctx, opt);
+    if (d.kind == kBool) {
+        uint32_t want = right ? 1 : 0;
+        if (kernel::g_base[row + kBoolState] != want) {
+            ctx.ecx = row;
+            kernel::CallGuest(ctx, kBoolSet, {want, 1});
+            ApplyOne(ctx, opt);
+        }
+        return;
+    }
+    uint32_t value = kernel::R32(row + kIntValue);
+    const uint32_t before = value;
+    if (right && value < uint32_t(d.hi)) value++;
+    else if (left && value > uint32_t(d.lo)) value--;
+    if (value != before) {
+        ctx.ecx = row;
+        kernel::CallGuest(ctx, kIntSet, {value, 1});
+        ApplyOne(ctx, opt);
+    }
 }
 
 // the page handler is going away (the pause menu was closed, or the front end left): unapplied changes are
