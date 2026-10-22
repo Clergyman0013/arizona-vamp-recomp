@@ -774,9 +774,11 @@ void MenuInput(X86Context& ctx, uint32_t menu) {
     const Def& d = kDefs[opt];
     if (d.kind == kBool || d.kind == kInt) {
         uint32_t before = RowValue(opt);
-        uint32_t pad = kernel::R32(ctx.esp + 4);
+        // sub_001EF55C takes two arguments; the second (at [esp+8]) is the pad/state the widget input reads as
+        // its second argument (the first is unused by the widget).
+        uint32_t pad = kernel::R32(ctx.esp + 8);
         ctx.ecx = row;
-        kernel::CallGuest(ctx, d.kind == kBool ? kBoolInput : kIntInput, {0, 0, pad});
+        kernel::CallGuest(ctx, d.kind == kBool ? kBoolInput : kIntInput, {0, pad});
         if (RowValue(opt) != before) ApplyOne(ctx, opt);
     }
 }
