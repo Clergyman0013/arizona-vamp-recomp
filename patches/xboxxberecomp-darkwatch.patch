@@ -978,10 +978,29 @@ index 25774ca..4570d3b 100644
      fs::path assets = FindAssets();
      std::vector<fs::path> isos;
 diff --git a/runtime/app/main.cpp b/runtime/app/main.cpp
-index 201bcaa..3d574d3 100644
+index 201bcaa..aeccc8a 100644
 --- a/runtime/app/main.cpp
 +++ b/runtime/app/main.cpp
-@@ -119,6 +119,21 @@ void ApplyNow() {
+@@ -13,6 +13,7 @@
+ #include <chrono>
+ #include <csignal>
+ #include <cwchar>
++#include <filesystem>
+ #include <thread>
+ 
+ #include <imgui.h>
+@@ -65,6 +66,10 @@ LONG WINAPI WriteCrashDump(EXCEPTION_POINTERS* e) {
+                       e ? &info : nullptr, nullptr, nullptr);
+     CloseHandle(f);
+     logx::Flush();
++    // the log is rewritten at the next start: keep this run's (the guest stack above) beside the dump
++    std::error_code ec;
++    std::filesystem::copy_file(logx::Path(), (dir / name).replace_extension(".log"),
++                               std::filesystem::copy_options::overwrite_existing, ec);
+     return EXCEPTION_CONTINUE_SEARCH;
+ }
+ 
+@@ -119,6 +124,21 @@ void ApplyNow() {
      }
  }
  
@@ -1003,7 +1022,7 @@ index 201bcaa..3d574d3 100644
  LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
      {
          std::lock_guard lock(UiLock());
-@@ -128,8 +143,20 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
+@@ -128,8 +148,20 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
      switch (msg) {
          case WM_KEYDOWN:
              if (wp == VK_F3) DumpThreads();
@@ -1024,7 +1043,7 @@ index 201bcaa..3d574d3 100644
              if (LOWORD(wp) == WA_INACTIVE) {
                  // a changed display mode steps aside for the desktop, minimized, and comes back on return; not while
                  // handing over to the next instance, which runs in the same mode
-@@ -226,12 +253,15 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int) {
+@@ -226,12 +258,15 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int) {
      if (app::Instance() > 1) log += "-" + std::to_string(app::Instance());
      logx::Init((app::ExeDir() / "logs").string(), log, relaunched);
      app::Load();

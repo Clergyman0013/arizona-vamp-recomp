@@ -154,7 +154,9 @@ X86_FUNC(sub_000DEDD0) {
 // stick, a fast flick hits full stick and the curve flattens slow moves. Here the mouse counts turn the view by an
 // angle each instead, and while the mouse aims the assist is off and the pitch does not level itself (the flag at
 // +0x74 the stick's rest sets). Split screen keeps the mouse as player 1's stick: the look calls do not say whose
-// view they are.
+// view they are. Only the on-foot controller's calls (sub_000A83DD, returning to 0xA84A1 and 0xA84B0) aim this way;
+// the other movement controllers (sub_000A1AC5, sub_000A1042) call the same look, and there the mouse stays the
+// stick: taking its motion while one of them runs (around the horse, a player report) leaves no mouse aim at all.
 namespace {
 constexpr float kDegreesPerCount = 0.06f;  // at 100% sensitivity
 
@@ -164,7 +166,10 @@ float Wrap(float deg) {
     return deg;
 }
 
-bool Direct() { return menu::g_mouse_direct && app::Get().keyboard && app::Get().mouse_look && LocalPlayers() == 1; }
+// ret: the look call's return address, which says whose controller turns the view
+bool Direct(uint32_t ret, uint32_t on_foot) {
+    return ret == on_foot && menu::g_mouse_direct && app::Get().keyboard && app::Get().mouse_look && LocalPlayers() == 1;
+}
 
 float Degrees(int counts) { return float(counts) * kDegreesPerCount * float(app::Get().mouse_sensitivity) / 100.0f; }
 
@@ -176,7 +181,17 @@ X86_EXTERN_FUNC(__imp__sub_000A2725);
 X86_FUNC(sub_000A2725) {
     mouse_menus::Playing();
     uint32_t look = ctx.ecx, ch = kernel::R32(look + 0x40);
-    if (!Direct() || !ch) {
+    // which movement controller turns the view, logged once each
+    static uint32_t s_seen[4];
+    uint32_t from = kernel::R32(ctx.esp);
+    for (uint32_t& s : s_seen)
+        if (s == from) break;
+        else if (!s) {
+            s = from;
+            LOGR("mouse: look turned from %08X (character %08X)", from, ch);
+            break;
+        }
+    if (!Direct(from, 0xA84A1) || !ch) {
         __imp__sub_000A2725(ctx, base);
         return;
     }
@@ -194,7 +209,7 @@ X86_FUNC(sub_000A2725) {
 X86_EXTERN_FUNC(__imp__sub_000A28AE);
 X86_FUNC(sub_000A28AE) {
     uint32_t look = ctx.ecx, ch = kernel::R32(look + 0x40);
-    if (!Direct() || !ch) {
+    if (!Direct(kernel::R32(ctx.esp), 0xA84B0) || !ch) {
         __imp__sub_000A28AE(ctx, base);
         return;
     }

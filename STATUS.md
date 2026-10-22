@@ -122,6 +122,10 @@ Its feature list (another port on the same SDK and the same USA disc), less its 
 - **Direct mouse aiming:** yaw `sub_000A2725` and pitch `sub_000A28AE` add the raw mouse counts (0.06 degrees a
   count at 100%) after the game's own turn; aim assist (look+0x5C) and pitch leveling (+0x74) are off while the
   mouse aims. Single player only; the horse (`sub_000BE0A9`, a matrix path) keeps the mouse as the stick.
+  Only the on-foot controller's look calls (`sub_000A83DD`, return 0xA84A1 / 0xA84B0) aim directly: the other
+  movement controllers (`sub_000A1AC5`, `sub_000A1042`) call the same look, and taking the mouse there left a
+  player with no mouse aim on the horse (2026-10-22 report; the horse ride itself not replayed here). The log names
+  each controller that turns the view once (`mouse: look turned from`).
   Vampire jumps not tried.
 - **Reticle size:** ReticleDisplay (vtable `0x00428378`) through the HUD sprite draw `sub_000DCCDB`. Checked at 150%.
 - **Cut-scene borders:** the cinematic manager's letterbox effect (`[0x004B7A68]`, draw `sub_00326CD1`) is skipped
