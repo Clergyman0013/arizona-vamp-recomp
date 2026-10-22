@@ -16,8 +16,12 @@ copy of Darkwatch for the original Xbox (USA release).
    More info, Run anyway.
 3. The first start builds the game's code for your PC from your own copy
    (the compiler folder), behind a progress window. This takes a while and
-   happens only once; if it is stopped, the next start carries on. After
-   that the game starts straight away.
+   happens only once; if it is stopped, the next start carries on. When it
+   is done the game starts by itself after 10 seconds (Start, A, Enter: at
+   once; Exit, B, Esc: not now). "Delete the build tools" (X, Space) removes
+   the compiler folder once the game is built; the game does not need it,
+   and your shaders and settings stay. After that the game starts straight
+   away.
 4. Windows Firewall may ask whether Darkwatch.exe may use the network (the
    game's system link). Cancel is fine for single player.
 5. The first time you play, shaders compile as the game meets them (short

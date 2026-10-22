@@ -210,10 +210,10 @@ index d3519d5..f2382f7 100644
  
 diff --git a/runtime/app/game_code.cpp b/runtime/app/game_code.cpp
 new file mode 100644
-index 0000000..0582ed9
+index 0000000..4c44075
 --- /dev/null
 +++ b/runtime/app/game_code.cpp
-@@ -0,0 +1,755 @@
+@@ -0,0 +1,763 @@
 +// The recompiled game code is built on the player's PC, so a release carries none of it: xbe_recomp translates each
 +// xbe of GameInfo::images to C++, clang compiles that and lld links it into <exe>.dll beside the executables, all from
 +// the compiler folder. The first start does this behind a progress window. Finished objects are kept, so a closed window
@@ -295,6 +295,8 @@ index 0000000..0582ed9
 +bool g_start = false;  // the player picked Start once the game was ready
 +bool g_delete_compiler = false;  // ticked on the ready page
 +uint64_t g_compiler_bytes = 0;
++int64_t g_ready_at = 0;  // ms the build finished; the game starts by itself kAutoStartMs later
++constexpr int64_t kAutoStartMs = 10000;
 +constexpr UINT kBuildDone = WM_APP + 1;
 +
 +int64_t NowMs() {
@@ -659,8 +661,10 @@ index 0000000..0582ed9
 +                   std::to_wstring(g_progress.files_total);
 +        case Stage::Linking:
 +            return L"Linking the game's code";
-+        default:
-+            return L"Start the game now?";
++        default: {
++            int64_t left = g_ready_at ? (g_ready_at + kAutoStartMs - NowMs() + 999) / 1000 : kAutoStartMs / 1000;
++            return L"Starting in " + std::to_wstring(std::max<int64_t>(left, 0)) + L" s, or press Start now";
++        }
 +    }
 +}
 +
@@ -736,7 +740,8 @@ index 0000000..0582ed9
 +    RECT label = l.delete_toggle;
 +    label.left += unit * 3 / 2;
 +    std::wstring megabytes = std::to_wstring(g_compiler_bytes >> 20);
-+    DrawLine(dc, label, L"Delete the compiler files, " + megabytes + L" MB (X)", kText, DT_LEFT);
++    // the compiler folder: the tools that translated the game's code, not needed to play (the shader cache stays)
++    DrawLine(dc, label, L"Delete the build tools, " + megabytes + L" MB, not needed to play (X)", kText, DT_LEFT);
 +}
 +
 +void Paint(HDC dc, const RECT& client, int unit) {
@@ -839,6 +844,8 @@ index 0000000..0582ed9
 +        case WM_TIMER:
 +            InvalidateRect(hwnd, nullptr, FALSE);
 +            PollController(hwnd);
++            // nobody picked: the game starts by itself, a long build usually finishes with the player away
++            if (ready && g_ready_at && IsWindow(hwnd) && NowMs() - g_ready_at >= kAutoStartMs) CloseWindowWith(hwnd, true);
 +            return 0;
 +        case WM_LBUTTONUP:
 +            OnClick(hwnd, lp);
@@ -863,6 +870,7 @@ index 0000000..0582ed9
 +                return 0;
 +            }
 +            g_compiler_bytes = CompilerBytes();
++            g_ready_at = NowMs();
 +            FlashWindow(hwnd, TRUE);
 +            return 0;
 +    }
@@ -882,7 +890,7 @@ index 0000000..0582ed9
 +    RegisterClassExW(&wc);
 +    UINT dpi = GetDpiForSystem();
 +    DWORD style = WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX;
-+    RECT r{0, 0, MulDiv(520, dpi, 96), MulDiv(130, dpi, 96)};
++    RECT r{0, 0, MulDiv(600, dpi, 96), MulDiv(130, dpi, 96)};
 +    AdjustWindowRectExForDpi(&r, style, FALSE, 0, dpi);
 +    int w = r.right - r.left;
 +    int h = r.bottom - r.top;
