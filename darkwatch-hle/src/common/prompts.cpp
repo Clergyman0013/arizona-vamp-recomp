@@ -4,6 +4,10 @@
 // row, are 256x256 P8 textures with those four pictures side by side at the same place. As the renderer decodes
 // them, the four cells are drawn again for a PlayStation or Switch pad, by position: the bottom button is the
 // game's A. The pictures are drawn here, shapes and letters, nothing taken from elsewhere.
+//
+// The in-level hints ("USE X TO MELEE ATTACK THE DOOR LOCK") draw from a second font, also 256x256 P8, whose same
+// four pictures are smaller and further left (centres x 32.5, 54.5, 75, 96 on row 40, radius 5); it gets the same
+// treatment, the symbols scaled to its size.
 #include <algorithm>
 #include <atomic>
 #include <cmath>
@@ -25,10 +29,18 @@ namespace {
 enum Style : uint32_t { kAuto, kXbox, kPlayStation, kSwitch };
 
 constexpr uint32_t kFmtP8 = 0x0B, kSize = 256;
-// the cells, left edge, 13 x 14 texels from row 35, in the font's order X Y A B
-constexpr uint32_t kTop = 35, kW = 13, kH = 14;
-constexpr uint32_t kLeft[4] = {71, 93, 115, 138};
 enum Cell { kWest, kNorth, kSouth, kEast };  // the pad positions of X Y A B
+
+// where a font has its four pictures, in the font's order X Y A B
+struct Layout {
+    float cx[4], cy;  // centres (texels)
+    float radius;     // of the round button
+    bool whole_cell;  // the menu font: its whole 13 x 14 cell is drawn, outside the button clear
+};
+// the menu font: cells 13 x 14 texels from row 35, left edges 71, 93, 115, 138
+constexpr Layout kMenuFont{{77.5f, 99.5f, 121.5f, 144.5f}, 42.0f, 6.45f, true};
+constexpr Layout kHintFont{{32.5f, 54.5f, 75.0f, 96.0f}, 40.0f, 5.0f, false};
+constexpr float kMenuRadius = kMenuFont.radius;  // the symbols' sizes below are for this button
 
 std::atomic<uint32_t> s_drawn{kXbox};  // what the decode draws
 uint32_t s_seen = kXbox;               // what the textures were last decoded with
@@ -43,11 +55,13 @@ struct Rgb {
 uint8_t* At(uint8_t* px, uint32_t pitch, uint32_t x, uint32_t y) { return px + size_t(y) * pitch + size_t(x) * 4; }
 
 // the font, by the colours of its four pictures: blue X, yellow Y, green A, red B
-bool IsFont(uint8_t* px, uint32_t pitch) {
+bool IsFont(uint8_t* px, uint32_t pitch, const Layout& l) {
     for (int c = 0; c < 4; c++) {
         int n = 0;
-        for (uint32_t y = kTop; y < kTop + kH; y++)
-            for (uint32_t x = kLeft[c]; x < kLeft[c] + kW; x++) {
+        uint32_t x0 = uint32_t(l.cx[c] - l.radius), y0 = uint32_t(l.cy - l.radius);
+        uint32_t x1 = uint32_t(l.cx[c] + l.radius), y1 = uint32_t(l.cy + l.radius);
+        for (uint32_t y = y0; y <= y1; y++)
+            for (uint32_t x = x0; x <= x1; x++) {
                 const uint8_t* p = At(px, pitch, x, y);
                 int b = p[0], g = p[1], r = p[2];
                 if (p[3] < 128) continue;
@@ -103,30 +117,39 @@ float Symbol(uint32_t style, int cell, float x, float y) {
     return d <= kLine;
 }
 
-void DrawCell(uint8_t* px, uint32_t pitch, uint32_t style, int cell) {
+void DrawCell(uint8_t* px, uint32_t pitch, uint32_t style, int cell, const Layout& l) {
     // PlayStation: the symbols in their usual colours; Switch: white letters
     static const Rgb kPsColours[4] = {{0.91f, 0.60f, 0.85f}, {0.30f, 0.85f, 0.70f}, {0.52f, 0.70f, 0.96f}, {0.96f, 0.42f, 0.42f}};
     const Rgb ink = style == kSwitch ? Rgb{0.97f, 0.97f, 0.97f} : kPsColours[cell];
     const Rgb disc{0.12f, 0.12f, 0.13f}, rim{0.45f, 0.45f, 0.47f};
-    constexpr float kRadius = 6.45f, kRim = 0.9f;
+    const float radius = l.radius, rim_width = 0.9f * radius / kMenuRadius, scale = kMenuRadius / radius;
     constexpr int kSub = 4;  // samples per texel and axis
-    const float cx = float(kLeft[cell]) + kW / 2.0f, cy = float(kTop) + kH / 2.0f;
-    for (uint32_t y = kTop; y < kTop + kH; y++)
-        for (uint32_t x = kLeft[cell]; x < kLeft[cell] + kW; x++) {
+    const float cx = l.cx[cell], cy = l.cy;
+    // the menu font's whole cell; elsewhere only the texels the button touches, the rest of the font stays
+    uint32_t x0 = l.whole_cell ? uint32_t(cx - 6.5f) : uint32_t(std::floor(cx - radius));
+    uint32_t y0 = l.whole_cell ? uint32_t(cy - 7.0f) : uint32_t(std::floor(cy - radius));
+    uint32_t x1 = l.whole_cell ? x0 + 13 : uint32_t(std::ceil(cx + radius));
+    uint32_t y1 = l.whole_cell ? y0 + 14 : uint32_t(std::ceil(cy + radius));
+    for (uint32_t y = y0; y < y1; y++)
+        for (uint32_t x = x0; x < x1; x++) {
             float r = 0, g = 0, b = 0, a = 0;
             for (int sy = 0; sy < kSub; sy++)
                 for (int sx = 0; sx < kSub; sx++) {
                     float fx = float(x) + (sx + 0.5f) / kSub - cx, fy = float(y) + (sy + 0.5f) / kSub - cy;
                     float dist = std::hypot(fx, fy);
-                    if (dist > kRadius) continue;
-                    // letters sit on whole texels: their grid is offset by half a texel up
+                    if (dist > radius) continue;
+                    // the symbols are sized for the menu font's button; letters sit on whole texels there, their
+                    // grid offset by half a texel up
+                    fx *= scale;
+                    fy *= scale;
                     float sym = Symbol(style, cell, fx, style == kSwitch ? fy + 0.5f : fy);
-                    const Rgb& c = sym > 0 ? ink : dist > kRadius - kRim ? rim : disc;
+                    const Rgb& c = sym > 0 ? ink : dist > radius - rim_width ? rim : disc;
                     r += c.r;
                     g += c.g;
                     b += c.b;
                     a += 1;
                 }
+            if (a == 0 && !l.whole_cell) continue;
             uint8_t* p = At(px, pitch, x, y);
             constexpr float kSamples = kSub * kSub;
             if (a > 0) {  // straight alpha: the colour of the covered part
@@ -154,17 +177,18 @@ uint32_t Wanted() {
 // render thread, each texture level decoded
 void Texture(uint32_t data, uint32_t format, uint32_t width, uint32_t height, uint32_t level, uint8_t* bgra, uint32_t pitch) {
     if (format != kFmtP8 || width != kSize || height != kSize || level != 0) return;
-    if (!IsFont(bgra, pitch)) return;
+    const Layout* l = IsFont(bgra, pitch, kMenuFont) ? &kMenuFont : IsFont(bgra, pitch, kHintFont) ? &kHintFont : nullptr;
+    if (!l) return;
     {
         std::lock_guard lock(s_lock);
         if (std::find(s_fonts.begin(), s_fonts.end(), data) == s_fonts.end()) {
             s_fonts.push_back(data);
-            LOGR("prompts: button font at %08X", data);
+            LOGR("prompts: %s button font at %08X", l == &kMenuFont ? "menu" : "hint", data);
         }
     }
     uint32_t style = s_drawn;
     if (style == kXbox) return;
-    for (int c = 0; c < 4; c++) DrawCell(bgra, pitch, style, c);
+    for (int c = 0; c < 4; c++) DrawCell(bgra, pitch, style, c, *l);
 }
 
 // each frame: a new pad or setting has the fonts decoded again
