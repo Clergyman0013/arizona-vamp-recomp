@@ -66,7 +66,7 @@ constexpr uint32_t kIntCtor = 0x001F02EC;
 constexpr uint32_t kIntSet = 0x001F0210;
 constexpr uint32_t kIntInput = 0x001F0292;
 constexpr uint32_t kMoveSound = 0x001E917C;
-constexpr uint32_t kOriginalBack = 0x000F68E3;
+constexpr uint32_t kOriginalBack = 0x000F68E3;  // through our hook, which lets it pass once s_live is clear
 
 // menu fields (mouse_menus.cpp has the same list)
 constexpr uint32_t kMenuCount = 0x58, kMenuRows = 0x5C, kMenuFirst = 0x60, kMenuShown = 0x64, kMenuPicked = 0x68;
@@ -570,7 +570,7 @@ void Leave(X86Context& ctx) {
     s_live = false;
     s_confirm = false;
     ctx.ecx = s_handler;
-    kernel::CallGuest(ctx, kOriginalBack, {0});
+    kernel::CallGuest(ctx, kOriginalBack, {0});  // s_live is clear: our hook passes it to the game's back
 }
 
 void TryLeave(X86Context& ctx) {
@@ -754,7 +754,8 @@ bool Update(X86Context& ctx) {
 bool PressHandler(X86Context& ctx, uint32_t handler) { return Press(ctx, handler); }
 
 bool BackHandler(X86Context& ctx, uint32_t handler) {
-    if (!s_ready || handler != s_handler) return false;
+    // !s_live: another page's back, or the original back after Leave; never re-enter
+    if (!s_ready || !s_live || handler != s_handler) return false;
     if (s_confirm) {
         s_confirm = false;
         ShowMain(ctx, true);
