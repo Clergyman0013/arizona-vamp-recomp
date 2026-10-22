@@ -98,8 +98,13 @@ void Patch() {
 X86_EXTERN_FUNC(__imp__sub_000F64B3);
 X86_FUNC(sub_000F64B3) {
     uint32_t item = game_menu::Selected(kernel::R32(ctx.ecx + 4));
-    if (item && kernel::g_base[item + 0x54] && game_menu::Named(item, "XBL_XboxLiveOptions"))
-        settings_menu::Opening(ctx);
+    if (item && kernel::g_base[item + 0x54] && game_menu::Named(item, "XBL_XboxLiveOptions")) {
+        // the pause menu's xbox_live_options page is the Xbox Live sign-in page, not an options page, so the
+        // native PC SETTINGS page cannot live there; open the F1 overlay on its Display page instead
+        menu::OpenFromGame();
+        kernel::Return(ctx, 0, 1);
+        return;
+    }
     __imp__sub_000F64B3(ctx, base);
 }
 
