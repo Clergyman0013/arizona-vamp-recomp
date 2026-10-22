@@ -68,6 +68,7 @@ namespace {
 constexpr uint32_t kMenuVtable = 0x43C8B8;   // Menu
 constexpr uint32_t kAlloc = 0x0024C546;      // operator new, cdecl
 constexpr uint32_t kIntern = 0x000138FA;     // StringId(const char*), thiscall on the id, ret 4
+constexpr uint32_t kRelease = 0x00011C1A;    // ~StringId, thiscall
 
 constexpr uint32_t kMenuItemCtor = 0x001EFB52;
 constexpr uint32_t kReserve = 0x000166F7;    // grow a menu container (rows or children)
@@ -78,7 +79,10 @@ constexpr uint32_t kIntCtor = 0x001F02EC;
 constexpr uint32_t kIntSet = 0x001F0210;
 constexpr uint32_t kIntInput = 0x001F0292;
 constexpr uint32_t kInputTest = 0x001EE6DB;  // (controller bits, direction, pad state, out) -> pressed
+constexpr uint32_t kSetText = 0x001E9583;    // text element: use this text id, thiscall, ret 4
 constexpr uint32_t kMoveSound = 0x001E917C;
+constexpr uint32_t kButtonOn = 0x001EEEC1;   // ButtonBar::Enable(index), thiscall, ret 4
+constexpr uint32_t kButtonOff = 0x001EEEF2;  // ButtonBar::Disable(index), thiscall, ret 4
 constexpr uint32_t kOriginalBack = 0x000F68E3;  // through our hook, which lets it pass once s_live is clear
 
 // menu fields (mouse_menus.cpp has the same list)
@@ -182,6 +186,7 @@ std::vector<uint32_t> s_orig_rows;
 std::vector<uint8_t> s_orig_on;
 std::vector<RowRef> s_pages[kPageCount];
 std::vector<uint32_t> s_choice_rows[kOptCount];
+uint32_t s_choice_idx[kOptCount] = {};
 Values s_snapshot{};
 
 // display mode and resolution wait for APPLY CHANGES
@@ -200,13 +205,13 @@ long s_revert_left = -1;
 // the page heading and the description line (pool strings the page data draws)
 uint32_t s_pool_title = 0, s_pool_desc = 0;
 char s_pool_title_orig[16] = {};
-char s_pool_desc_orig[18] = {};
+char s_pool_desc_orig[40] = {};
 int s_help_opt = -999;
 
 // fixed guest memory for our texts and ids: allocated once with the game's own allocator
 uint32_t s_strings = 0, s_strings_at = 0;
 uint32_t s_ids = 0, s_ids_at = 0;
-uint32_t s_choice_id[kOptCount][64] = {};
+uint32_t s_choice_text[kOptCount][64] = {};  // "~VALUE" text ids for the choice rows
 
 bool ReadyForText() { return s_strings && s_ids; }
 
@@ -433,10 +438,24 @@ uint32_t MenuItem(X86Context& ctx, uint32_t name, uint32_t link) {
     return row;
 }
 
-void SetChoiceRow(int opt, uint32_t row) {
-    for (int p = 0; p < kPageCount; p++)
-        for (RowRef& r : s_pages[p])
-            if (r.opt == opt) r.row = row;
+// a choice row is a BoolWidget with both strings set to the chosen value: the game's own < > arrows and text
+void UpdateChoiceText(X86Context& ctx, int opt, uint32_t index) {
+    if (s_choice_rows[opt].empty()) return;
+    uint32_t row = s_choice_rows[opt][0];
+    uint32_t chars = s_choice_text[opt][std::min<uint32_t>(index, 63)];
+    if (!chars) return;
+    // +0x80 and +0x88 are StringId objects (the ctor makes them from GEN_Yes/GEN_No): rebuild both from our
+    // chosen value, then copy one into the text element's StringId (+0x48) as BoolSet does
+    for (uint32_t at : {row + 0x80, row + 0x88}) {
+        ctx.ecx = at;
+        kernel::CallGuest(ctx, kIntern, {chars});
+    }
+    uint32_t text = kernel::R32(row + kRowText);
+    if (text) {
+        ctx.ecx = text + 0x48;
+        kernel::CallGuest(ctx, kSetText, {row + 0x80});
+    }
+    s_choice_idx[opt] = index;
 }
 
 void BuildRows(X86Context& ctx) {
@@ -467,13 +486,21 @@ void BuildRows(X86Context& ctx) {
         const Def& d = kDefs[opt];
         LOGR("settings page: option %d %s", opt, d.label);
         const Values v = ReadValues();
+        uint32_t name = Intern(ctx, (std::string("~") + d.label).c_str());
         if (d.kind == kChoice) {
-            uint32_t row = s_choice_rows[opt].empty() ? 0 : s_choice_rows[opt][std::min<uint32_t>(index, uint32_t(s_choice_rows[opt].size() - 1))];
+            // a BoolWidget with both strings set to the chosen value draws the game's < value > row
+            uint32_t row = Alloc(ctx, 0xA0);
             if (!row) return;
+            ctx.ecx = row;
+            kernel::CallGuest(ctx, kBoolCtor, {name, 0, 0, 0, 0, 0});
+            Write8(row + 0x7C, 0);
+            CopyInput(row);
+            CopyFont(row, peer);
+            s_choice_rows[opt].assign(ChoiceCount(opt), row);
+            UpdateChoiceText(ctx, opt, index);
             s_pages[page].push_back({opt, row});
             return;
         }
-        uint32_t name = Intern(ctx, (std::string("~") + d.label).c_str());
         if (d.kind == kBool) {
             uint32_t row = Alloc(ctx, 0xA0);
             if (!row) return;
@@ -504,22 +531,6 @@ void BuildRows(X86Context& ctx) {
         }
     };
 
-    auto choice = [&](int opt) {
-        const Def& d = kDefs[opt];
-        const uint32_t count = ChoiceCount(opt);
-        s_choice_rows[opt].clear();
-        uint32_t link = Intern(ctx, "pc_choice");
-        for (uint32_t i = 0; i < count; i++) {
-            char line[128];
-            std::snprintf(line, sizeof(line), "~%s: <%s>", d.label, ChoiceName(opt, i));
-            uint32_t row = MenuItem(ctx, s_choice_id[opt][i] ? s_choice_id[opt][i] : Intern(ctx, line), link);
-            if (!row) continue;
-            Write8(row + kRowOn, 0);
-            CopyFont(row, peer);
-            s_choice_rows[opt].push_back(row);
-        }
-    };
-
     // top page
     header(kPageTop, "~PC SETTINGS");
     action(kPageTop, "~DISPLAY AND GRAPHICS", "pc_open_display", kOpenDisplay);
@@ -530,11 +541,6 @@ void BuildRows(X86Context& ctx) {
     action(kPageTop, "~BACK", "pc_back", kBack);
 
     // display and graphics
-    choice(kDisplayMode);
-    choice(kResolution);
-    choice(kFps);
-    choice(kAniso);
-    choice(kMsaa);
     header(kPageDisplay, "~DISPLAY AND GRAPHICS");
     option(kPageDisplay, kDisplayMode, ChoiceIndex(kDisplayMode, ReadValues().v[kDisplayMode]));
     option(kPageDisplay, kResolution, ChoiceIndex(kResolution, ReadValues().v[kResolution]));
@@ -553,7 +559,6 @@ void BuildRows(X86Context& ctx) {
     action(kPageDisplay, "~BACK", "pc_back", kBack);
 
     // controls
-    choice(kPrompts);
     header(kPageControls, "~CONTROLS");
     option(kPageControls, kPrompts, ChoiceIndex(kPrompts, ReadValues().v[kPrompts]));
     option(kPageControls, kKeyboard, 0);
@@ -583,7 +588,7 @@ void BuildRows(X86Context& ctx) {
 void SetDescription(const char* text) {
     if (!s_pool_desc) return;
     size_t n = std::strlen(text);
-    if (n > 17) n = 17;
+    if (n > 36) n = 36;
     std::memcpy(kernel::g_base + s_pool_desc + 2, text, n);
     kernel::g_base[s_pool_desc + 2 + n] = 0;
 }
@@ -695,13 +700,17 @@ uint32_t FindPool(const char* text, size_t n) {
 }
 
 void PatchHeading(X86Context& ctx) {
-    // the description is still "PC SETTINGS" (menu_hooks renamed Xbox Live Options); find it before the heading
-    // "Xbox Live" is renamed, so the two are not confused
+    // the page's description line is the Xbox Live page's own comment ("Choose to appear Online or Offline."),
+    // a pool string; use its room for the selected row's help. menu_hooks.cpp renamed the Xbox Live row text to
+    // PC SETTINGS, so that string is only the fallback.
     if (!s_pool_desc) {
-        if (uint32_t d = FindPool("PC SETTINGS", sizeof("PC SETTINGS"))) {
+        uint32_t d = FindPool("Choose to appear Online or Offline.", sizeof("Choose to appear Online or Offline."));
+        if (!d) d = FindPool("PC SETTINGS", sizeof("PC SETTINGS"));
+        if (d) {
             s_pool_desc = d;
             std::memcpy(s_pool_desc_orig, kernel::g_base + d + 2, sizeof(s_pool_desc_orig));
-            LOGR("settings page: description pool string (%08X)", d);
+            LOGR("settings page: description pool string (%08X: %s)", d,
+                 reinterpret_cast<const char*>(kernel::g_base + d + 2));
         }
     }
     if (uint32_t t = FindPool("Xbox Live", sizeof("Xbox Live"))) {
@@ -748,8 +757,8 @@ void SyncRows(X86Context& ctx) {
             }
         } else if (d.kind == kChoice) {
             uint32_t idx = ChoiceIndex(opt, v.v[opt]);
-            if (idx < s_choice_rows[opt].size() && r.row != s_choice_rows[opt][idx]) {
-                r.row = s_choice_rows[opt][idx];
+            if (idx != s_choice_idx[opt]) {
+                UpdateChoiceText(ctx, opt, idx);
                 choice_changed = true;
             }
         }
@@ -783,7 +792,7 @@ void ChangeChoice(X86Context& ctx, int opt, uint32_t index) {
         s_pending_w = mode.width;
         s_pending_h = mode.height;
     }
-    if (uint32_t row = s_choice_rows[opt].empty() ? 0 : s_choice_rows[opt][index]) SetChoiceRow(opt, row);
+    UpdateChoiceText(ctx, opt, index);
     kernel::CallGuest(ctx, kMoveSound, {});
     if (opt != kDisplayMode && opt != kResolution) {
         Values v = ReadValues();
@@ -808,15 +817,11 @@ void RevertDisplay(X86Context& ctx) {
     s_pending_mode = s_revert_mode;
     s_pending_w = s_revert_w;
     s_pending_h = s_revert_h;
-    uint32_t mode_row = s_choice_rows[kDisplayMode].empty() ? 0 : s_choice_rows[kDisplayMode][std::min<uint32_t>(uint32_t(s_revert_mode), uint32_t(s_choice_rows[kDisplayMode].size() - 1))];
-    if (mode_row) SetChoiceRow(kDisplayMode, mode_row);
-    uint32_t res = ResIndex(s_revert_w, s_revert_h);
-    uint32_t res_row = s_choice_rows[kResolution].empty() ? 0 : s_choice_rows[kResolution][std::min<uint32_t>(res, uint32_t(s_choice_rows[kResolution].size() - 1))];
-    if (res_row) SetChoiceRow(kResolution, res_row);
+    UpdateChoiceText(ctx, kDisplayMode, std::min<uint32_t>(uint32_t(s_revert_mode), 2));
+    UpdateChoiceText(ctx, kResolution, ResIndex(s_revert_w, s_revert_h));
     s_dirty = false;
     s_keep = false;
     LOGR("settings page: display mode restored");
-    (void)ctx;
 }
 
 void Leave(X86Context& ctx);
@@ -1021,7 +1026,7 @@ void Construct(X86Context& ctx) {
     LOGR("settings page: guest text %08X ids %08X", s_strings, s_ids);
     s_strings_at = s_ids_at = 0;
     s_pool_title = s_pool_desc = 0;
-    std::memset(s_choice_id, 0, sizeof(s_choice_id));
+    std::memset(s_choice_text, 0, sizeof(s_choice_text));
     for (int opt = 0; opt < kOptCount; opt++) s_choice_rows[opt].clear();
     s_pending_mode = app::Get().display_mode;
     s_pending_w = app::Get().width;
@@ -1042,8 +1047,8 @@ void Construct(X86Context& ctx) {
         const uint32_t count = std::min<uint32_t>(ChoiceCount(opt), 63);
         for (uint32_t i = 0; i < count; i++) {
             char line[128];
-            std::snprintf(line, sizeof(line), "~%s: <%s>", d.label, ChoiceName(opt, i));
-            s_choice_id[opt][i] = Intern(ctx, line);
+            std::snprintf(line, sizeof(line), "~%s", ChoiceName(opt, i));
+            s_choice_text[opt][i] = GuestText(ctx, line);
         }
     }
 
@@ -1076,6 +1081,8 @@ void Opening(X86Context& ctx) {
     }
     s_pending = true;
 }
+
+void EnableSelect(X86Context& ctx);
 
 // The page handler's update. Returns 0 for another handler, 1 when ours has been updated and 2 when the page has
 // just been opened: the caller then runs the game's own update once (it enables the page's button prompts) before
@@ -1120,7 +1127,18 @@ int Update(X86Context& ctx) {
         UpdateHelp();
         SyncRows(ctx);
     }
+    EnableSelect(ctx);
     return 1;
+}
+
+// The page's button bar has the SELECT prompt (entry 4) but the Xbox Live page data leaves it hidden. Show it
+// again after the page's own update, which puts it back to the page's default.
+void EnableSelect(X86Context& ctx) {
+    uint32_t page = kernel::R32(s_handler + 8);
+    uint32_t bar = page ? kernel::R32(page + 0x54) : 0;
+    if (!bar) return;
+    ctx.ecx = bar;
+    kernel::CallGuest(ctx, kButtonOn, {4});
 }
 
 // after the game's own first update: our rows up, heading renamed
@@ -1128,6 +1146,7 @@ void Opened(X86Context& ctx) {
     if (!s_live) return;
     ShowPage(ctx, kPageTop, true);
     PatchHeading(ctx);
+    EnableSelect(ctx);
     LOGR("settings page: opened");
 }
 
