@@ -91,7 +91,7 @@ std::vector<app::Mode> s_modes;  // the monitor's resolutions, largest first
 // rebinding: the control waiting for a key, and whether that key replaces or joins the others
 int s_bind = -1;
 bool s_bind_add = false;
-bool s_bind_released = false;  // the click that started it has been let go
+bool s_bind_released = false;  // PollBind has seen the keys as they were when it started
 
 const char* kPages[] = {"Display", "Graphics", "Controls", "Game"};
 constexpr int kPageCount = int(sizeof(kPages) / sizeof(kPages[0]));
@@ -414,24 +414,28 @@ void SetKeys(const char* control, const std::string& keys) {
     s_dirty = true;
 }
 
-// the key pressed while a control waits; Escape gives up
+// the key pressed while a control waits; Escape gives up. Only a key going down counts: some keys read as held all
+// the time on some PCs (a media key), and the click on Set is still down when this starts.
 void PollBind() {
+    static bool s_down[256];
+    bool was[256];
+    for (int vk = 1; vk < 255; vk++) {
+        was[vk] = s_down[vk];
+        s_down[vk] = (GetAsyncKeyState(vk) & 0x8000) != 0;
+    }
     if (s_bind < 0) return;
-    bool any = false;
-    for (int vk = 1; vk < 255; vk++)
-        if (GetAsyncKeyState(vk) & 0x8000) any = true;
     if (!s_bind_released) {
-        s_bind_released = !any;
+        s_bind_released = true;  // the keys down now are the old state, not a press
         return;
     }
-    if (GetAsyncKeyState(VK_ESCAPE) & 0x8000) {
+    if (s_down[VK_ESCAPE] && !was[VK_ESCAPE]) {
         s_bind = -1;
         return;
     }
     for (int vk = 1; vk < 255; vk++) {
         // the left and right Shift, Ctrl and Alt are named apart; the plain ones would bind both
         if (vk == VK_SHIFT || vk == VK_CONTROL || vk == VK_MENU || vk == VK_F1) continue;
-        if (!(GetAsyncKeyState(vk) & 0x8000)) continue;
+        if (!s_down[vk] || was[vk]) continue;
         std::string name = input::KeyName(vk);
         if (name.empty()) continue;
         const char* control = kControlLabels[s_bind].first;
