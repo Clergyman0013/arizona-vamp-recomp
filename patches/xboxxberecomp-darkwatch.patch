@@ -3787,7 +3787,7 @@ index bec6e36..06446cf 100644
  
  // Exceptions dispatch like NT on x86: each handler of the fs:[0] chain is called (record, frame, context,
 diff --git a/runtime/xdk/d3d8.cpp b/runtime/xdk/d3d8.cpp
-index cb38363..023d471 100644
+index cb38363..8434b67 100644
 --- a/runtime/xdk/d3d8.cpp
 +++ b/runtime/xdk/d3d8.cpp
 @@ -11,6 +11,7 @@
@@ -3820,7 +3820,34 @@ index cb38363..023d471 100644
  
  namespace d3d {
  
-@@ -275,6 +284,14 @@ HLE_STDCALL(Direct3D_CreateDevice, 6) {
+@@ -212,14 +221,22 @@ void ApplyDefaultStates(X86Context& ctx) {
+ constexpr bool kVBlank = XDK_CDevice_VBlankCount != xdk::kUnknown && XDK_CDevice_VBlankEvent != xdk::kUnknown &&
+                          XDK_CDevice_VBlankCallback != xdk::kUnknown;
+ 
++// The display's 60 Hz. The blanks fall on one fixed grid, so a title loop that waits for each one keeps the display's
++// time however long its own work takes (a movie's sound is decoded by such a loop, and falls behind with a plain
++// sleep).
++constexpr std::chrono::nanoseconds kBlankPeriod{16666667};
++const std::chrono::steady_clock::time_point g_blank_epoch = std::chrono::steady_clock::now();
++
++std::chrono::steady_clock::time_point NextBlank() {
++    auto since = std::chrono::steady_clock::now() - g_blank_epoch;
++    return g_blank_epoch + (since / kBlankPeriod + 1) * kBlankPeriod;
++}
++
+ // what the library's vertical blank interrupt leaves for the title: count, event, callback
+ void VerticalBlank(X86Context& ctx) {
+-    using clock = std::chrono::steady_clock;
+     uint32_t info = mem::AllocSystem(12), shown = 0;
+-    auto next = clock::now();
+     for (;;) {
+-        next = std::max(next + std::chrono::microseconds(16667), clock::now());
+-        std::this_thread::sleep_until(next);
++        std::this_thread::sleep_until(NextBlank());
+         uint32_t count = Dev(XDK_CDevice_VBlankCount) + 1, swaps = Dev(kDevSwapCount);
+         SetDev(XDK_CDevice_VBlankCount, count);
+         ObjectRef event = FromPointer(kDevice + XDK_CDevice_VBlankEvent);
+@@ -275,6 +292,14 @@ HLE_STDCALL(Direct3D_CreateDevice, 6) {
      uint32_t color_fmt = gpu::LinearColorFormat(fmt);
      g_buffer_count = std::min<uint32_t>(count + 1, 3);
      for (uint32_t i = 0; i < g_buffer_count; i++) g_buffers[i] = NewSurface(w, h, color_fmt, 4);
@@ -3835,7 +3862,7 @@ index cb38363..023d471 100644
      g_depth = 0;
      if (auto_depth) {
          uint32_t zf = gpu::LinearDepthFormat(depth_fmt);
-@@ -339,7 +356,7 @@ HLE_STDCALL(D3D_BlockOnResource, 1) {
+@@ -339,7 +364,7 @@ HLE_STDCALL(D3D_BlockOnResource, 1) {
                  uint32_t code[4] = {}, n = 0;
                  for (uint32_t i = 0; i < 32 && n < 4; i++) {
                      uint32_t v = R32(ctx.esp + i * 4);
@@ -3844,7 +3871,18 @@ index cb38363..023d471 100644
                  }
                  LOGI("d3d: BlockOnResource on surface %08X, stack %08X %08X %08X %08X", data, code[0], code[1], code[2], code[3]);
              }
-@@ -842,12 +859,68 @@ HLE_FASTCALL(D3DDevice_SetVertexShaderConstantNotInlineFast, 1) {
+@@ -413,8 +438,9 @@ HLE_STDCALL(D3D_MakeRequestedSpace, 2) {
+     return ScratchPush();
+ }
+ 
++// until the next blank on the grid, not a fixed 16 ms: a loop around it runs at 60 Hz, its own work included
+ HLE_STDCALL(D3DDevice_BlockUntilVerticalBlank, 0) {
+-    std::this_thread::sleep_for(std::chrono::milliseconds(16));
++    std::this_thread::sleep_until(NextBlank());
+     return 0;
+ }
+ HLE_STDCALL(D3DDevice_SetFlickerFilter, 1) { return 0; }
+@@ -842,12 +868,68 @@ HLE_FASTCALL(D3DDevice_SetVertexShaderConstantNotInlineFast, 1) {
      return 0;
  }
  
@@ -3915,7 +3953,7 @@ index cb38363..023d471 100644
      return 0;
  }
  HLE_STDCALL(D3DDevice_SetShaderConstantMode, 1) {
-@@ -857,20 +930,30 @@ HLE_STDCALL(D3DDevice_SetShaderConstantMode, 1) {
+@@ -857,20 +939,30 @@ HLE_STDCALL(D3DDevice_SetShaderConstantMode, 1) {
      return 0;
  }
  
@@ -3952,7 +3990,7 @@ index cb38363..023d471 100644
      return 0;
  }
  
-@@ -878,24 +961,20 @@ HLE_STDCALL(D3DDevice_SetPixelShader, 1) {
+@@ -878,24 +970,20 @@ HLE_STDCALL(D3DDevice_SetPixelShader, 1) {
      std::lock_guard<std::recursive_mutex> lock(g_lock);
      g_state.ps = nullptr;
      if (!a[0]) return 0;
@@ -3988,7 +4026,7 @@ index cb38363..023d471 100644
      // the definition loads the combiner state like the XDK pushes it
      const uint32_t* d = g_state.ps->def;
      auto put = [&](uint32_t method, uint32_t v) { g_state.simple[method >> 2] = v; };
-@@ -929,11 +1008,23 @@ HLE_STDCALL(D3DDevice_SetPixelShaderConstant, 3) {
+@@ -929,11 +1017,23 @@ HLE_STDCALL(D3DDevice_SetPixelShaderConstant, 3) {
  
  // drawing
  
@@ -4012,7 +4050,7 @@ index cb38363..023d471 100644
      return 0;
  }
  
-@@ -943,6 +1034,7 @@ HLE_STDCALL(D3DDevice_DrawIndexedVertices, 3) {
+@@ -943,6 +1043,7 @@ HLE_STDCALL(D3DDevice_DrawIndexedVertices, 3) {
      SyncDeferred();
      const uint8_t* indices = a[2] ? static_cast<const uint8_t*>(HostPtr(a[2])) : nullptr;
      if (g_backend) g_backend->Draw(g_state, a[0], 0, a[1], indices);
@@ -4020,7 +4058,7 @@ index cb38363..023d471 100644
      return 0;
  }
  
-@@ -1064,6 +1156,19 @@ void Walk(uint32_t end) {
+@@ -1064,6 +1165,19 @@ void Walk(uint32_t end) {
              bool last = true;  // the slot's last component
              std::memcpy(&f, &v, 4);
              ApplyVisibilityMethod(m, v);
