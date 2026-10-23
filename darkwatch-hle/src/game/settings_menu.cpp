@@ -39,6 +39,7 @@ extern bool g_widescreen, g_mouse_direct, g_cutscene_borders;
 void OpenFromGame();   // src/common/menu.cpp: the F1 overlay
 void OpenControls();   // the same, opened on its Controls page (key capture)
 const std::vector<app::Mode>& Modes();  // the monitor's resolutions, largest first
+bool MenuOpen();       // the F1 overlay is up
 }  // namespace menu
 
 namespace content {
@@ -1144,15 +1145,25 @@ int Update(X86Context& ctx) {
         return 2;
     }
     if (!s_live) return 1;
-    if (s_page != kPageKeep) SyncRows(ctx);
     Tick(ctx);
     return 1;
 }
 
-// Every frame the page is up (the menu's input runs each frame; the page handler's update does not): the keep page
-// counts down and goes back by itself, and the SELECT prompt stays shown.
+// Every frame the page is up (the menu's input runs each frame; the page handler's update does not): the rows follow
+// the settings (the F1 menu can change them while the page is up), the keep page counts down and goes back by
+// itself, and the SELECT prompt stays shown.
 void Tick(X86Context& ctx) {
     if (!s_live) return;
+    if (menu::MenuOpen() && s_page != kPageKeep) {
+        // the F1 menu applies the display at once: the page's pending mode follows it
+        const app::Settings& s = app::Get();
+        s_pending_mode = s.display_mode;
+        s_pending_w = s.width;
+        s_pending_h = s.height;
+        // and what it saved is not ours to discard
+        if (!s_dirty) s_snapshot = ReadValues();
+    }
+    if (s_page != kPageKeep) SyncRows(ctx);
     if (s_page == kPageKeep) {
         const uint64_t now = GetTickCount64();
         if (now >= s_revert_at) {
