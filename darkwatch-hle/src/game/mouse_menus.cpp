@@ -91,8 +91,9 @@ bool Cursor(float& x, float& y, int& px, int& py) {
     return x >= -1 && x <= 1 && y >= -1 && y <= 1;
 }
 
-// the shown row of the menu under the cursor, -1 for none
-int RowAt(uint32_t m, float x, float y) {
+// the shown row of the menu under the cursor, -1 for none; place: its place among the shown rows
+int RowAt(uint32_t m, float x, float y, int& place) {
+    place = -1;
     uint32_t n = kernel::R16(m + 0x58), rows = kernel::R32(m + 0x5C);
     if (!n || !rows) return -1;
     uint32_t shown = kernel::R32(m + 0x64);
@@ -105,7 +106,10 @@ int RowAt(uint32_t m, float x, float y) {
     float band = 1.0f / float(shown);
     for (uint32_t j = 0; j < shown && first + j < n; j++) {
         Box row = Inside(box, {0, 1 - band - 2 * band * float(j), 1, band});
-        if (std::fabs(y - row.y) <= row.h) return int(first + j);
+        if (std::fabs(y - row.y) <= row.h) {
+            place = int(j);
+            return int(first + j);
+        }
     }
     return -1;
 }
@@ -142,16 +146,27 @@ void MenuInput(X86Context& ctx, uint32_t m) {
         return;
     }
     float x, y;
-    int px, py;
+    int px = s_last_x, py = s_last_y;  // kept when the cursor is off the window
     bool in = Cursor(x, y, px, py);
     // where the cursor is when the pointer comes on (the middle, after mouse look) is no move
     bool moved = was_on && (px != s_last_x || py != s_last_y);
     was_on = true;
     s_last_x = px;
     s_last_y = py;
-    int row = in ? RowAt(m, x, y) : -1;
+    int band = -1;
+    int row = in ? RowAt(m, x, y, band) : -1;
     if (row >= 0 && !On(m, row)) row = -1;
-    if (row >= 0 && moved && uint32_t(row) != kernel::R32(m + 0x68)) {
+    // A list longer than its shown rows scrolls when the pick nears its top or bottom, and other rows come under a
+    // cursor that has not left its place: once the list moved since the last pick, only going to another shown row
+    // picks again (otherwise a small move on the last row runs the list to its end).
+    static uint32_t s_pick_menu = 0, s_pick_first = 0;
+    static int s_band = -1;  // the shown row the cursor was on last time
+    uint32_t first = kernel::R32(m + 0x60);
+    bool may = m != s_pick_menu || band != s_band || first == s_pick_first;
+    s_band = row >= 0 ? band : -1;
+    if (row >= 0 && moved && may && uint32_t(row) != kernel::R32(m + 0x68)) {
+        s_pick_menu = m;
+        s_pick_first = first;
         kernel::CallGuest(ctx, kMoveSound, {});
         ctx.ecx = m;
         kernel::CallGuest(ctx, kSetSelected, {uint32_t(row)});
