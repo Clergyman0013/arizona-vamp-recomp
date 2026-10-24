@@ -52,6 +52,7 @@ extern uint32_t g_style;
 
 namespace mouse_menus {
 extern bool g_on;
+int PadAcross();  // left (-1) or right (1) held on a controller, as last polled
 }
 
 namespace report {
@@ -144,8 +145,8 @@ const Def kDefs[kOptCount] = {
     {kChoice, "ANISOTROPIC FILTERING", 0, 4, kAnisoNames, 5},
     {kChoice, "ANTI-ALIASING (MSAA)", 0, 3, kMsaaNames, 4},
     {kBool, "PRECOMPILE SHADERS", 0, 0, nullptr, 0},
-    {kInt, "FIELD OF VIEW", 39, 110, nullptr, 0},
-    {kInt, "WEAPON FIELD OF VIEW", 39, 110, nullptr, 0},
+    {kInt, "FIELD OF VIEW", 55, 110, nullptr, 0},
+    {kInt, "WEAPON FIELD OF VIEW", 55, 110, nullptr, 0},
     {kBool, "WIDESCREEN FRAMING", 0, 0, nullptr, 0},
     {kInt, "RETICLE SIZE", 50, 200, nullptr, 0},
     {kBool, "CUT-SCENE BORDERS", 0, 0, nullptr, 0},
@@ -342,8 +343,9 @@ Values ReadValues() {
     v.v[kAniso] = s.aniso;
     v.v[kMsaa] = s.msaa;
     v.v[kPrecompile] = s.precompile_shaders;
-    v.v[kFov] = menu::g_fov ? menu::g_fov : 39;
-    v.v[kWeaponFov] = menu::g_weapon_fov ? menu::g_weapon_fov : 39;
+    // 0, the game's own, is its 55
+    v.v[kFov] = std::clamp<uint32_t>(menu::g_fov, 55, 110);
+    v.v[kWeaponFov] = std::clamp<uint32_t>(menu::g_weapon_fov, 55, 110);
     v.v[kWide] = menu::g_widescreen;
     v.v[kReticle] = menu::g_reticle;
     v.v[kBorders] = menu::g_cutscene_borders;
@@ -371,8 +373,8 @@ void WriteValues(const Values& v) {
     s.aniso = v.v[kAniso];
     s.msaa = v.v[kMsaa];
     s.precompile_shaders = v.v[kPrecompile] != 0;
-    menu::g_fov = v.v[kFov] <= 39 ? 0 : std::min<uint32_t>(v.v[kFov], 110);
-    menu::g_weapon_fov = v.v[kWeaponFov] <= 39 ? 0 : std::min<uint32_t>(v.v[kWeaponFov], 110);
+    menu::g_fov = v.v[kFov] <= 55 ? 0 : std::min<uint32_t>(v.v[kFov], 110);
+    menu::g_weapon_fov = v.v[kWeaponFov] <= 55 ? 0 : std::min<uint32_t>(v.v[kWeaponFov], 110);
     menu::g_widescreen = v.v[kWide] != 0;
     menu::g_reticle = std::clamp<uint32_t>(v.v[kReticle], 50, 200);
     menu::g_cutscene_borders = v.v[kBorders] != 0;
@@ -1237,9 +1239,9 @@ bool BackHandler(X86Context& ctx, uint32_t handler) {
     return true;
 }
 
-// left and right on the selected row change the value. The arrow keys are read here (the game maps them to the
-// pad, and the pad state the game passes in is not a plain held mask), with the guest's own direction test as a
-// fallback; the game's widgets get no input, so a slider steps once and then repeats.
+// left and right on the selected row change the value. The arrow keys and the controllers' d-pad and left stick are
+// read here (the game maps them to the pad, and the pad state the game passes in is not a plain held mask), with the
+// guest's own direction test as a fallback; the game's widgets get no input, so a slider steps once and then repeats.
 void MenuInput(X86Context& ctx, uint32_t menu) {
     if (!s_ready || menu != s_menu || !s_live) return;
     s_input_at = GetTickCount64();
@@ -1258,8 +1260,9 @@ void MenuInput(X86Context& ctx, uint32_t menu) {
     DWORD fg_pid = 0;
     GetWindowThreadProcessId(GetForegroundWindow(), &fg_pid);
     const bool focused = fg_pid == GetCurrentProcessId();
-    const bool lnow = focused && (GetAsyncKeyState(VK_LEFT) & 0x8000) != 0;
-    const bool rnow = focused && (GetAsyncKeyState(VK_RIGHT) & 0x8000) != 0;
+    const int pad = mouse_menus::PadAcross();
+    const bool lnow = pad < 0 || (focused && (GetAsyncKeyState(VK_LEFT) & 0x8000) != 0);
+    const bool rnow = pad > 0 || (focused && (GetAsyncKeyState(VK_RIGHT) & 0x8000) != 0);
     bool left = false, right = false;
     if (lnow && (!s_left_down || now >= s_left_at)) {
         left = true;

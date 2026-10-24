@@ -96,8 +96,9 @@ int RowAt(uint32_t m, float x, float y, int& place) {
     place = -1;
     uint32_t n = kernel::R16(m + 0x58), rows = kernel::R32(m + 0x5C);
     if (!n || !rows) return -1;
+    // the bands are as many as the rows it shows, also when it has fewer rows than that (sub_001EF781)
     uint32_t shown = kernel::R32(m + 0x64);
-    if (!shown || shown > n) shown = n;
+    if (!shown) shown = n;
     uint32_t first = kernel::R32(m + 0x60);
     Box area = Read(m + 0x88);
     Box box = OnScreen(m);
@@ -224,8 +225,21 @@ void Wheel(int delta) {
     if (input::Pointer()) s_wheel += delta / WHEEL_DELTA;
 }
 
+// left and right on any controller as last polled (d-pad or left stick): -1, 0 or 1 for the PC SETTINGS page, which
+// takes them itself
+std::atomic<int> s_across[4] = {};
+int PadAcross() {
+    int across = 0;
+    for (const auto& a : s_across)
+        if (int v = a.load()) across = v;
+    return across;
+}
+
 // player 1's pad, as polled: the clicks and the wheel as A, B and the d-pad up and down
 void Pad(int port, input::Pad& pad) {
+    if (port < 0 || port > 3) return;
+    const bool left = (pad.buttons & 4) || pad.lx < -16000, right = (pad.buttons & 8) || pad.lx > 16000;
+    s_across[port] = left == right ? 0 : left ? -1 : 1;
     if (port != 0) return;
     uint64_t now = Now();
     for (int i = 0; i < 4; i++) {

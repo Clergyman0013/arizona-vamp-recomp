@@ -55,7 +55,7 @@ constexpr float kPi = 3.14159265f;
 // how much wider than the game's a setting's view is (tan of half the angle), 1 for 0
 float FovScale(uint32_t degrees) {
     if (!degrees) return 1;
-    float d = std::fmin(std::fmax(float(degrees), 30.0f), 130.0f);
+    float d = std::fmin(std::fmax(float(degrees), kGameFov), 110.0f);  // the settings' range
     return std::tan(d * kPi / 360.0f) / std::tan(kGameFov * kPi / 360.0f);
 }
 

@@ -332,13 +332,13 @@ void PageDisplay() {
     if (ImGui::Checkbox("##vsync", &s.vsync)) s_dirty = true;
 }
 
-// 0 is the game's own; the slider runs 40-110 degrees, the far left reading as the game's
+// 0 is the game's own; the slider runs 55-110 degrees, the far left (the game's 55) reading as the game's
 bool FovSlider(const char* id, uint32_t* deg) {
-    int v = *deg ? int(*deg) : 39;
+    int v = std::clamp(int(*deg), 55, 110);
     char label[32];
-    std::snprintf(label, sizeof(label), *deg ? "%u" : "Game (55)", *deg);
-    if (!ImGui::SliderInt(id, &v, 39, 110, label)) return false;
-    *deg = v <= 39 ? 0 : uint32_t(v);
+    std::snprintf(label, sizeof(label), v > 55 ? "%d" : "Game (55)", v);
+    if (!ImGui::SliderInt(id, &v, 55, 110, label)) return false;
+    *deg = v <= 55 ? 0 : uint32_t(v);
     return true;
 }
 
