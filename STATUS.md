@@ -71,6 +71,19 @@ menu still needed):
 | General | Pause on focus loss (game + sound) | no |
 | Misc | Custom menu cursor (`cursor.png`) | no |
 
+### Train boss crash, sound pool headroom (2026-10-24, v0.5.4)
+
+- Issue #2: a crash in the first boss fight on the train, 558 s in. Two threads were inside XACT's timed-event heap
+  at once: the game thread stopping a sound and XACT's timer DPC. XACT guards that heap by raising to dispatch
+  level, which on the console's single processor keeps every DPC out; the SDK only recorded the level and runs DPCs
+  on their own host thread. Now one recursive lock is held from a raise to dispatch level to the lower below it, and
+  by every DPC and the vertical blank callback while they run; a wait that can block lets it go (SDK patch,
+  `runtime/kernel`, `runtime/xdk/d3d8.cpp`). About 7000 raises a second, nearly all on XACT's thread, at no
+  measurable cost; no deadlock and no blocking wait at dispatch level in 5 runs. The boss crash itself was not
+  reproduced here.
+- The streamed 3D sound pool has 32 voices (93 XACT 3D sources, one more per added voice). At most 8 were in use at
+  once in testing, so this is headroom; 7 already turned none away.
+
 ### Horse cry, menu music, PC SETTINGS in the game's menus (2026-10-24, v0.5.3)
 
 - The horse in THE WRONG TRAIN went quiet again, only some of the time. The sound manager has three voices for

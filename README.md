@@ -103,8 +103,10 @@ Day-to-day progress, findings and open bugs are in [STATUS.md](STATUS.md).
 - Frame rates above 100: the game's actor scripts skipped every frame shorter than 10 ms, so scripted things
   (doors, enemies) stood still at 120 or 144 fps. They now run every frame.
 - **QUIT TO DESKTOP** in the main menu.
-- Six voices instead of three for streamed 3D sounds: two level-long loops held two of the three, and one-shots
+- 32 voices instead of three for streamed 3D sounds: two level-long loops held two of the three, and one-shots
   such as the horse's cry in THE WRONG TRAIN were dropped.
+- No crash when the game stops a sound while the sound engine's timer updates the same list (issue #2): the host
+  keeps the two apart as the console's single processor did.
 - Fog-streak fix in the meat-locker corridor (the game's own screen-space texture scale, patched).
 - Xbox Live entries turned into the PC settings menu, and the front end's "Sign-in failed." status line gone.
 - Saves stay beside the game (`hdd\E`), so a copied folder keeps them.
