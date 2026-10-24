@@ -11,8 +11,10 @@ Xbox release left out, real display modes, render scaling, MSAA, keyboard and mo
 > This project is not affiliated with or endorsed by the game's publisher or developer.
 
 <p align="center">
-  <img src="docs/images/level1.png" width="49%" alt="The first level, THE WRONG TRAIN, rendered by the port">
-  <img src="docs/images/pc-settings.png" width="49%" alt="The in-game PC settings menu">
+  <img src="docs/images/level1.png" width="49%" alt="THE WRONG TRAIN at 1080p with widescreen framing, field of view 80 and 8x MSAA">
+  <img src="docs/images/front-end.png" width="49%" alt="The main menu, with QUIT TO DESKTOP">
+  <img src="docs/images/pc-settings-page.png" width="49%" alt="PC SETTINGS as the game's own page in OPTIONS and the pause menu">
+  <img src="docs/images/pc-settings.png" width="49%" alt="The F1 PC settings menu, Graphics page">
 </p>
 
 ## Two-player Split-screen Co-op campaign
@@ -34,13 +36,15 @@ been tested through the start of the first chapter so far: tell us how far you g
 
 ## Status
 
-**Early, but playable into the first level on Windows.** The game boots, plays its movies, and goes through the
-front end and briefing into the first level (THE WRONG TRAIN). There it runs at 60 fps with sound, lighting, fog and
-the HUD close to the console. A full play-through has not been done yet; that is the next big step.
+**Beta, playable on Windows.** The game boots, plays its movies and goes through the front end into the campaign,
+with sound, music, lighting, fog and the HUD close to the console, at 60 fps or more. Testers have played into the
+first chapter's boss fight on the train. A full play-through has not been done yet; that is the next big step, and
+every F4 report helps.
 
 | Platform | State |
 |---|---|
-| **Windows 10/11 x64** | Main target. Builds natively; reaches and plays the first level. |
+| **Windows 10/11 x64** | Main target. Release zips on the [releases page](https://github.com/Clergyman0013/arizona-vamp-recomp/releases). |
+| Linux (Proton) | Untested. A black-screen fix for Proton is in; reports welcome. |
 | macOS (Apple silicon) | Later. A headless test harness builds and reaches PRESS START. |
 | Android | Later. |
 
@@ -56,16 +60,19 @@ Day-to-day progress, findings and open bugs are in [STATUS.md](STATUS.md).
   and **Don't show this again** (turn it back on under PC settings, Graphics).
 - XAudio2 sound, including the game's XACT audio.
 
-**PC settings menu**, in game: press **F1**, press **Back + Start** on a controller, or pick **PC SETTINGS**
-in the pause menu or the main menu's OPTIONS (it replaces the Xbox Live entry).
+**PC settings**, in two places with the same options:
+- **PC SETTINGS** in the main menu's OPTIONS and in the pause menu (it replaces the Xbox Live entry) is the game's own
+  page, with its look, sounds and a help line for each row. Left and right change a value (arrow keys, d-pad or left
+  stick), and the mouse works there too.
+- **F1** (or **Back + Start** on a controller) opens the full menu anywhere, over the game.
 - **Display:** fullscreen / borderless / windowed, resolution, render resolution 25-200%, frame-rate cap, V-Sync.
   A new display mode asks to be kept and goes back after 15 seconds.
-- **Graphics:** **MSAA anti-aliasing (2x / 4x / 8x)**, field of view (80 by default; the game's is 55) and a
+- **Graphics:** **MSAA anti-aliasing (2x / 4x / 8x)**, field of view (55, the game's, to 110; 80 by default) and a
   separate weapon field of view, widescreen framing (a wide screen shows more at the sides instead of a stretched
   4:3 picture; on by default), reticle size, in-level cut-scene borders (off by default), anisotropic filtering (16x by default), optional *PS2 alpha blending*
   (removes the previous-frame ghosting that the Xbox version has).
-- **Controls:** button prompts (the controller in use, or Xbox / PlayStation / Switch), keyboard and mouse on or
-  off, mouse look and sensitivity, direct mouse aiming, mouse in the game's menus, key rebinding.
+- **Controls:** button prompts (the controller in use, or Xbox / PlayStation / Switch / keyboard and mouse),
+  keyboard and mouse on or off, mouse look and sensitivity, direct mouse aiming, mouse in the game's menus, key rebinding.
 - **Game:** frame-rate counter, the War Train chapter and Splitter grenades (below).
 - Changes apply at once and are saved to `settings.toml`. Exit to Desktop is one click away.
 
@@ -73,8 +80,9 @@ in the pause menu or the main menu's OPTIONS (it replaces the Xbox Live entry).
 - Controllers work as on the console: Xbox, PlayStation and Switch Pro pads, and paired Joy-Cons (through SDL;
   the buttons go by position, so a Switch pad's bottom button is A).
 - **Button prompts that match your controller:** with a PlayStation pad the game's prompts show cross, circle,
-  square and triangle; with a Switch pad its letters (B, A, Y, X by position). Xbox pads and the keyboard keep the
-  Xbox buttons. The pictures switch as soon as you pick up another controller.
+  square and triangle (and R2 / L2); with a Switch pad its letters (B, A, Y, X by position, and ZR / ZL). With the
+  keyboard and mouse they show the key or mouse button bound to each control, and follow your rebinding. The
+  pictures switch as soon as you pick up another controller, in the menus and in the in-level hints.
 - Full keyboard and mouse support for player 1, with raw mouse look and rebindable keys.
 - **Mouse in the game's menus:** point at a row to pick it, left click selects, right click goes back, the wheel
   steps through the rows. The cursor shows in menus and the mouse goes back to looking when play resumes.
@@ -95,6 +103,8 @@ in the pause menu or the main menu's OPTIONS (it replaces the Xbox Live entry).
 - Frame rates above 100: the game's actor scripts skipped every frame shorter than 10 ms, so scripted things
   (doors, enemies) stood still at 120 or 144 fps. They now run every frame.
 - **QUIT TO DESKTOP** in the main menu.
+- Six voices instead of three for streamed 3D sounds: two level-long loops held two of the three, and one-shots
+  such as the horse's cry in THE WRONG TRAIN were dropped.
 - Fog-streak fix in the meat-locker corridor (the game's own screen-space texture scale, patched).
 - Xbox Live entries turned into the PC settings menu, and the front end's "Sign-in failed." status line gone.
 - Saves stay beside the game (`hdd\E`), so a copied folder keeps them.
@@ -167,9 +177,8 @@ The full list is in [ROADMAP.md](ROADMAP.md). In short:
 1. **Play-through QA:** play the whole game, file F4 reports, fix as they come.
 2. **Co-op:** player 2's own model, a full co-op play-through, keyboard and mouse for either player.
 3. **More PC options:** SMAA, monitor choice, draw distance, FMV scaling, pause on focus loss, mouse invert, HDR10.
-4. **Polish:** direct mouse aiming on the horse, the HUD kept in proportion on a wide screen, PlayStation and
-   Switch pictures for the triggers and shoulder buttons, background shader compiles so even the very first run
-   does not stutter.
+4. **Polish:** direct mouse aiming on the horse, the HUD kept in proportion on a wide screen, background shader
+   compiles so even the very first run does not stutter.
 5. **More platforms:** macOS, then Android.
 
 ## How it works
