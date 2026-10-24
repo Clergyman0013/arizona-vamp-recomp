@@ -71,6 +71,22 @@ menu still needed):
 | General | Pause on focus loss (game + sound) | no |
 | Misc | Custom menu cursor (`cursor.png`) | no |
 
+### Horse cry, menu music, PC SETTINGS in the game's menus (2026-10-24, v0.5.3)
+
+- The horse in THE WRONG TRAIN went quiet again, only some of the time. The sound manager has three voices for
+  streamed 3D sounds (`sub_00206044` hands them out by priority, then distance). Two loops hold two of them for the
+  whole level from its start, so every other streamed one-shot shared the third, and one farther away than the sound
+  on it was turned away: 16 of 17 at the level start. The horse asks once, so it played only when the third voice was
+  free. The pool has six now, with three more XACT voices and streams (`src/game/sound_pool.cpp`): 2 of 126 turned
+  away. Darkwatch: Darker Edition found the same pool and enlarged it the same way; our code is our own.
+- The menu music crackled every minute: the vertical blank wait slept a fixed 16 ms, so the movie's sound decoder,
+  which waits on it, fell behind until its buffer ran dry. The wait keeps a 60 Hz grid now (SDK patch,
+  `runtime/xdk/d3d8.cpp`).
+- PC SETTINGS is the game's own page in OPTIONS and the pause menu (`src/game/settings_menu.cpp`), with left and right
+  from the arrow keys, the d-pad and the left stick. Fixed with it: key rebinding took the key still held from the
+  menu, the page did not follow F1 changes, and the mouse picked the wrong row on short pages and ran long lists to
+  their end. Both field of view settings run 55 (the game's) to 110.
+
 ### Black screen under Proton (2026-10-22, issue #1)
 
 - Under Proton (Sarek, CachyOS, Steam Deck) the game played sound over a black screen. Proton's `D3DCompile` is
