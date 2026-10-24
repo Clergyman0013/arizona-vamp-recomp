@@ -91,7 +91,7 @@ std::vector<app::Mode> s_modes;  // the monitor's resolutions, largest first
 // rebinding: the control waiting for a key, and whether that key replaces or joins the others
 int s_bind = -1;
 bool s_bind_add = false;
-bool s_bind_released = false;  // the click that started it has been let go
+bool s_bind_released = false;  // PollBind has seen the keys as they were when it started
 
 const char* kPages[] = {"Display", "Graphics", "Controls", "Game"};
 constexpr int kPageCount = int(sizeof(kPages) / sizeof(kPages[0]));
@@ -332,13 +332,13 @@ void PageDisplay() {
     if (ImGui::Checkbox("##vsync", &s.vsync)) s_dirty = true;
 }
 
-// 0 is the game's own; the slider runs 40-110 degrees, the far left reading as the game's
+// 0 is the game's own; the slider runs 55-110 degrees, the far left (the game's 55) reading as the game's
 bool FovSlider(const char* id, uint32_t* deg) {
-    int v = *deg ? int(*deg) : 39;
+    int v = std::clamp(int(*deg), 55, 110);
     char label[32];
-    std::snprintf(label, sizeof(label), *deg ? "%u" : "Game (55)", *deg);
-    if (!ImGui::SliderInt(id, &v, 39, 110, label)) return false;
-    *deg = v <= 39 ? 0 : uint32_t(v);
+    std::snprintf(label, sizeof(label), v > 55 ? "%d" : "Game (55)", v);
+    if (!ImGui::SliderInt(id, &v, 55, 110, label)) return false;
+    *deg = v <= 55 ? 0 : uint32_t(v);
     return true;
 }
 
@@ -414,24 +414,28 @@ void SetKeys(const char* control, const std::string& keys) {
     s_dirty = true;
 }
 
-// the key pressed while a control waits; Escape gives up
+// the key pressed while a control waits; Escape gives up. Only a key going down counts: some keys read as held all
+// the time on some PCs (a media key), and the click on Set is still down when this starts.
 void PollBind() {
+    static bool s_down[256];
+    bool was[256];
+    for (int vk = 1; vk < 255; vk++) {
+        was[vk] = s_down[vk];
+        s_down[vk] = (GetAsyncKeyState(vk) & 0x8000) != 0;
+    }
     if (s_bind < 0) return;
-    bool any = false;
-    for (int vk = 1; vk < 255; vk++)
-        if (GetAsyncKeyState(vk) & 0x8000) any = true;
     if (!s_bind_released) {
-        s_bind_released = !any;
+        s_bind_released = true;  // the keys down now are the old state, not a press
         return;
     }
-    if (GetAsyncKeyState(VK_ESCAPE) & 0x8000) {
+    if (s_down[VK_ESCAPE] && !was[VK_ESCAPE]) {
         s_bind = -1;
         return;
     }
     for (int vk = 1; vk < 255; vk++) {
         // the left and right Shift, Ctrl and Alt are named apart; the plain ones would bind both
         if (vk == VK_SHIFT || vk == VK_CONTROL || vk == VK_MENU || vk == VK_F1) continue;
-        if (!(GetAsyncKeyState(vk) & 0x8000)) continue;
+        if (!s_down[vk] || was[vk]) continue;
         std::string name = input::KeyName(vk);
         if (name.empty()) continue;
         const char* control = kControlLabels[s_bind].first;
@@ -681,6 +685,16 @@ void Window(void* hwnd) {
 
 bool MenuOpen() { return s_open; }
 void OpenFromGame() { s_game_open = true; }
+// the game's KEY BINDINGS row: the overlay on its Controls page, where the keys are captured
+void OpenControls() {
+    s_page = 2;
+    s_game_open = true;
+}
+// the monitor's resolutions for the game's own resolution row, largest first (built by ReadModes)
+const std::vector<app::Mode>& Modes() {
+    if (s_modes.empty()) ReadModes();
+    return s_modes;
+}
 void MenuWindow(void* hwnd) { Window(hwnd); }
 bool MenuMessage(void* hwnd, uint32_t msg, uintptr_t wp, intptr_t lp, intptr_t* result) {
     if (msg == WM_MOUSEWHEEL && !s_open) mouse_menus::Wheel(GET_WHEEL_DELTA_WPARAM(wp));

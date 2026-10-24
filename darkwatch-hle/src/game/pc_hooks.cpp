@@ -30,6 +30,10 @@ namespace mouse_menus {
 void Playing();  // mouse_menus.cpp: the player's view turned, so no menu has the mouse
 }
 
+namespace settings_menu {
+void Playing(X86Context& ctx);  // settings_menu.cpp: the pause menu closed with PC SETTINGS up, leave it
+}
+
 namespace {
 
 float F32(uint32_t va) {
@@ -51,7 +55,7 @@ constexpr float kPi = 3.14159265f;
 // how much wider than the game's a setting's view is (tan of half the angle), 1 for 0
 float FovScale(uint32_t degrees) {
     if (!degrees) return 1;
-    float d = std::fmin(std::fmax(float(degrees), 30.0f), 130.0f);
+    float d = std::fmin(std::fmax(float(degrees), kGameFov), 110.0f);  // the settings' range
     return std::tan(d * kPi / 360.0f) / std::tan(kGameFov * kPi / 360.0f);
 }
 
@@ -180,6 +184,7 @@ std::atomic<uint64_t> s_aimed{0};
 X86_EXTERN_FUNC(__imp__sub_000A2725);
 X86_FUNC(sub_000A2725) {
     mouse_menus::Playing();
+    settings_menu::Playing(ctx);
     uint32_t look = ctx.ecx, ch = kernel::R32(look + 0x40);
     // which movement controller turns the view, logged once each
     static uint32_t s_seen[4];

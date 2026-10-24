@@ -98,7 +98,7 @@ void Close() {
     }
 }
 
-void Open() {
+void OpenBox() {
     if (s_open) return;
     s_open = true;
     s_skip = 2;  // the capture below records the next present; the box waits two frames
@@ -186,9 +186,9 @@ void Cancel() {
 }
 
 void Ui(double) {
-    if (s_want_open.exchange(false) && !s_open && !menu::MenuOpen()) Open();
+    if (s_want_open.exchange(false) && !s_open && !menu::MenuOpen()) OpenBox();
     // F4 reaches here too when the box is down (the window thread may miss it while ImGui eats keys)
-    if (!s_open && !menu::MenuOpen() && ImGui::IsKeyPressed(ImGuiKey_F4, false)) Open();
+    if (!s_open && !menu::MenuOpen() && ImGui::IsKeyPressed(ImGuiKey_F4, false)) OpenBox();
     if (!s_open) {
         if (std::chrono::steady_clock::now() < s_saved_until) {
             ImGuiIO& io = ImGui::GetIO();
@@ -260,6 +260,8 @@ void Pad(int, input::Pad& pad) {
 
 }  // namespace
 
+// the game's own REPORT A PROBLEM row: the same box F4 opens
+void Open() { OpenBox(); }
 bool ReportOpen() { return s_open; }
 void ReportWindow(void* hwnd) { Window(hwnd); }
 bool ReportMessage(void* hwnd, uint32_t msg, uintptr_t wp, intptr_t lp, intptr_t* result) {
