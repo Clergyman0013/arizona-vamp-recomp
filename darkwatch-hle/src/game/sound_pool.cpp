@@ -7,10 +7,11 @@
 // shares the last one, and one farther than the sound on it is turned away (0x1E). The horse's cry in the straw car
 // (cue HORSE_WAKE01) is asked for once, as the player walks up, and is lost that way.
 //
-// So the pool gets three more records, kept in guest memory of their own (the manager's other fields stay where
-// they are), and XACT is made with three more voices and streams for their sources. The manager's 57 other 3D
-// records and these six stay within the 64 sources it asks XACT for. In the first cars of the level 16 of 17 such
-// sounds were turned away with three records, and 2 of 126 with six.
+// So the pool gets 29 more records, 32 in all, kept in guest memory of their own (the manager's other fields stay
+// where they are), and XACT is made with 29 more voices, streams and 3D sources for them: the manager's 57 other 3D
+// records and the first 7 of these fill the 64 sources it asks for, and an eighth gets none. In the first cars of
+// the level 24 of 68 such sounds were turned away or cut off with three records; with seven or more none were, and
+// no more than seven were playing at once. 32 leaves room for busier scenes.
 #include <cstring>
 
 #include "core/log.h"
@@ -19,7 +20,7 @@
 namespace sound_pool {
 namespace {
 
-constexpr uint32_t kRecord = 0x20, kOwn = 3, kExtra = 3;
+constexpr uint32_t kRecord = 0x20, kOwn = 3, kExtra = 29;
 constexpr uint32_t kOwnAt = 0xB4C;  // the manager's own three
 constexpr uint32_t kEngine = 0x400; // the manager's XACT engine
 
@@ -59,15 +60,17 @@ struct Saved {
 
 using namespace sound_pool;
 
-// XACT's engine, made once by the manager: three more voices and streams (the parameters: voices, 3D sources,
-// streams, ...)
+// XACT's engine, made once by the manager: a voice, a stream and a 3D source more for each extra record (the
+// parameters: voices, 3D sources, streams, ...)
 X86_EXTERN_FUNC(__imp__sub_003E27AB);
 X86_FUNC(sub_003E27AB) {
     const uint32_t params = kernel::R32(ctx.esp + 4);
     if (params) {
         kernel::W32(params, kernel::R32(params) + kExtra);
+        kernel::W32(params + 4, kernel::R32(params + 4) + kExtra);
         kernel::W32(params + 8, kernel::R32(params + 8) + kExtra);
-        LOGR("sound pool: XACT voices %u, streams %u", kernel::R32(params), kernel::R32(params + 8));
+        LOGR("sound pool: XACT voices %u, 3D sources %u, streams %u", kernel::R32(params), kernel::R32(params + 4),
+             kernel::R32(params + 8));
     }
     __imp__sub_003E27AB(ctx, base);
 }
