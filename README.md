@@ -107,6 +107,8 @@ Day-to-day progress, findings and open bugs are in [STATUS.md](STATUS.md).
   such as the horse's cry in THE WRONG TRAIN were dropped.
 - No crash when the game stops a sound while the sound engine's timer updates the same list (issue #2): the host
   keeps the two apart as the console's single processor did.
+- Starts from disc images and unpacked files with no or very old file dates (the game stopped on its own date
+  check).
 - Fog-streak fix in the meat-locker corridor (the game's own screen-space texture scale, patched).
 - Xbox Live entries turned into the PC settings menu, and the front end's "Sign-in failed." status line gone.
 - Saves stay beside the game (`hdd\E`), so a copied folder keeps them.

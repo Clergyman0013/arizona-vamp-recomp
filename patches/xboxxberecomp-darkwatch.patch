@@ -3471,7 +3471,7 @@ index f636701..e6f0423 100644
      }                                                                                                    \
      static const bool kreg_##name = (::kernel::RegisterExport(ord, #name, kentry_##name), true);         \
 diff --git a/runtime/kernel/files.cpp b/runtime/kernel/files.cpp
-index e34ffbb..4a66854 100644
+index e34ffbb..f4511b3 100644
 --- a/runtime/kernel/files.cpp
 +++ b/runtime/kernel/files.cpp
 @@ -1,11 +1,16 @@
@@ -3499,7 +3499,34 @@ index e34ffbb..4a66854 100644
      std::mutex io;  // threads sharing a handle: seek and transfer stay together
      File() : Object(ObjType::File) {}
      ~File() override {
-@@ -296,6 +302,7 @@ uint32_t OpenOnDisc(const Disc::Entry* e, const std::string& name, uint32_t hand
+@@ -94,10 +100,16 @@ struct Link : Object {
+     Link() : Object(ObjType::SymLink) {}
+ };
+ 
++// A file time before 2001 is given as the console's launch day (2001-11-15). A disc image's volume time can be empty,
++// and files unpacked by some tools are dated 1980; Darkwatch asserts that a file it opens is from 2001 or later.
++uint64_t Dated(uint64_t t) { return t < 126227808000000000ull ? 126502560000000000ull : t; }
++
++uint64_t DiscTime() { return Dated(MountedDisc()->Time()); }
++
+ uint64_t ToFileTime(fs::file_time_type t) {
+     using namespace std::chrono;
+     auto sys = time_point_cast<nanoseconds>(t - fs::file_time_type::clock::now() + system_clock::now());
+-    return uint64_t(sys.time_since_epoch().count() / 100 + 116444736000000000ll);
++    return Dated(uint64_t(sys.time_since_epoch().count() / 100 + 116444736000000000ll));
+ }
+ 
+ void FillNetworkInfo(uint32_t out, uint64_t t, uint64_t size, bool dir) {
+@@ -114,7 +126,7 @@ void FillNetworkInfo(uint32_t out, const fs::path& p) {
+ }
+ 
+ void FillNetworkInfo(uint32_t out, const Disc::Entry& e) {
+-    FillNetworkInfo(out, MountedDisc()->Time(), e.dir ? 0 : e.size, e.dir);
++    FillNetworkInfo(out, DiscTime(), e.dir ? 0 : e.size, e.dir);
+ }
+ 
+ bool WildMatch(const std::string& pat, const std::string& s) {
+@@ -296,6 +308,7 @@ uint32_t OpenOnDisc(const Disc::Entry* e, const std::string& name, uint32_t hand
      f->xbox = Normalize(name);
      f->entry = e;
      f->dir = e->dir;
@@ -3507,7 +3534,7 @@ index e34ffbb..4a66854 100644
      W32(handle_out, NewHandle(f));
      IoStatus(iosb, kSuccess, 1);
      LOG_FIRST(400, "open %s", name.c_str());
-@@ -418,6 +425,7 @@ KERNEL_EXPORT(190, NtCreateFile, 9) {
+@@ -418,6 +431,7 @@ KERNEL_EXPORT(190, NtCreateFile, 9) {
      f->xbox = Normalize(name);
      f->fp = fp;
      f->delete_on_close = options & 0x1000;  // FILE_DELETE_ON_CLOSE
@@ -3515,7 +3542,7 @@ index e34ffbb..4a66854 100644
      W32(handle_out, NewHandle(f));
      IoStatus(iosb, kSuccess, info);
      LOG_FIRST(400, "open %s", name.c_str());
-@@ -447,14 +455,56 @@ KERNEL_EXPORT(202, NtOpenFile, 6) {
+@@ -447,14 +461,56 @@ KERNEL_EXPORT(202, NtOpenFile, 6) {
          if (!f->fp) f->fp = std::fopen(host.c_str(), "rb");
          if (!f->fp) return kAccessDenied;
      }
@@ -3575,7 +3602,7 @@ index e34ffbb..4a66854 100644
  static uint32_t Finish(File& f, uint32_t status, uint32_t n, uint32_t event, uint32_t apc, uint32_t apc_ctx, uint32_t iosb) {
      IoStatus(iosb, status, n);
      SetEvent(f);
-@@ -484,15 +534,29 @@ static uint32_t Transfer(const Args& a, bool write, uint32_t pages) {
+@@ -484,15 +540,29 @@ static uint32_t Transfer(const Args& a, bool write, uint32_t pages) {
          size_t done = f->entry ? MountedDisc()->Read(*f->entry, pos + n, HostPtr(at), chunk)
                        : write  ? std::fwrite(HostPtr(at), 1, chunk, f->fp)
                                 : std::fread(HostPtr(at), 1, chunk, f->fp);
@@ -3605,6 +3632,15 @@ index e34ffbb..4a66854 100644
  KERNEL_EXPORT(219, NtReadFile, 8) { return Transfer(a, false, 0); }
  KERNEL_EXPORT(236, NtWriteFile, 8) { return Transfer(a, true, 0); }
  // the buffer argument is an array of one page per element
+@@ -512,7 +582,7 @@ KERNEL_EXPORT(211, NtQueryInformationFile, 5) {
+     std::memset(HostPtr(out), 0, len);
+     switch (cls) {
+         case 4: {  // FileBasicInformation
+-            uint64_t t = f->entry ? MountedDisc()->Time() : ToFileTime(fs::last_write_time(f->host, ec));
++            uint64_t t = f->entry ? DiscTime() : ToFileTime(fs::last_write_time(f->host, ec));
+             for (int i = 0; i < 4; i++) W64(out + i * 8, t);
+             W32(out + 0x20, f->dir ? 0x10 : 0x80);
+             IoStatus(iosb, kSuccess, 0x28);
 diff --git a/runtime/kernel/kernel.h b/runtime/kernel/kernel.h
 index 6e12a39..2b9b565 100644
 --- a/runtime/kernel/kernel.h

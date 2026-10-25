@@ -116,8 +116,10 @@ X86_FUNC(sub_000F9B1D) {
     if (!cam) return;
     int slot = 0;
     for (int i = 0; i < kCams; i++) {
-        // the same camera again, a free slot, or one whose camera is gone
-        if (!s_cam[i] || s_cam[i] == cam || kernel::R32(s_cam[i] + 0x34) != s_rwcam[i]) {
+        // the same camera again, a free slot, or one whose camera is gone. A gone camera's heap page may be
+        // decommitted, and reading it there crashed at the end of a cutscene (issue #2)
+        uint32_t old = s_cam[i];
+        if (!old || old == cam || !mem::IsCommitted(old + 0x34) || kernel::R32(old + 0x34) != s_rwcam[i]) {
             slot = i;
             break;
         }

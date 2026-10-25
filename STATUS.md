@@ -71,6 +71,17 @@ menu still needed):
 | General | Pause on focus loss (game + sound) | no |
 | Misc | Custom menu cursor (`cursor.png`) | no |
 
+### Cutscene-end crash, launch assert (2026-10-24, v0.5.5)
+
+- Issue #2, the second reporter's two dumps (v0.5.2): a crash in our field of view code as a cutscene ends in the
+  train. The player view's setup (`sub_000F9B1D`) checks the cameras it kept to find a free slot, and read a camera
+  that was gone, on a heap page already decommitted. A slot whose page is not committed now counts as free
+  (`src/game/pc_hooks.cpp`). Tested by seeding a slot with an uncommitted address: the slot is reused, no fault.
+- Issue #3: a stop at launch, `guest trap at 00250056: int3`, the game's `_assert` for `systemTime.wYear >= 2001`
+  on a file's creation time (`sub_001D277C`). The reporter plays from an `.iso`, whose files take the image's
+  volume time, likely empty there. File times before 2001 now read as 2001-11-15 (SDK patch,
+  `runtime/kernel/files.cpp`). Reproduced with our files backdated to 1999, and gone with the fix.
+
 ### Train boss crash, sound pool headroom (2026-10-24, v0.5.4)
 
 - Issue #2: a crash in the first boss fight on the train, 558 s in. Two threads were inside XACT's timed-event heap
